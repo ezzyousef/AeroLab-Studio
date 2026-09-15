@@ -53,9 +53,15 @@ Step "Self-testing the built application"
 CheckExit "the built application failed its own self-test"
 
 Step "Packing the portable zip"
-$zip = "dist\AeroLabStudio-$version-portable.zip"
+# Compress-Archive gives up quietly on a tree this size (1,200+ files, 270 MB), so the
+# .NET API does the work; it also keeps the AeroLabStudio\ folder at the zip root.
+$zip = Join-Path (Resolve-Path dist) "AeroLabStudio-$version-portable.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
-Compress-Archive -Path dist\AeroLabStudio\* -DestinationPath $zip -CompressionLevel Optimal
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory(
+    (Resolve-Path dist\AeroLabStudio).Path, $zip,
+    [System.IO.Compression.CompressionLevel]::Optimal, $true)
+if (-not (Test-Path $zip)) { Fail "the portable zip was not created" }
 Write-Host "  $zip  ($([math]::Round((Get-Item $zip).Length / 1MB, 1)) MB)"
 
 if (-not $SkipInstaller) {
