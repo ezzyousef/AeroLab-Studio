@@ -1,0 +1,38 @@
+# Build output
+build/
+dist/
+*.spec.bak
+
+# Generated build assets (rebuilt by build_assets/make_icon.py)
+build_assets/aerolab.ico
+build_assets/version_info.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Application output
+*.aerolab
+*.opju
+*.xlsx
+!aerolab/resources/samples/*.xlsx
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

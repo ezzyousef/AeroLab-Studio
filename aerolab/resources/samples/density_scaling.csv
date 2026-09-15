@@ -1,0 +1,11 @@
+# Skeletal density rho_s = 1.116 g/cm^3 (helium pycnometry)
+Sample,Bulk density (g/cm^3),Young's modulus (MPa)
+NFT-1,0.132,16.5459
+NFT-2,0.139,20.3998
+NFT-3,0.147,21.3945
+NFT-4,0.157,23.699
+NFT-5,0.171,31.0879
+NFT-6,0.195,42.6203
+NFT-7,0.211,46.47
+NFT-8,0.24,57.8442
+NFT-9,0.263,74.0947

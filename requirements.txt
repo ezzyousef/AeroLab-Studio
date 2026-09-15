@@ -1,0 +1,15 @@
+# AeroLab Studio — runtime requirements
+# Install with:  pip install -r requirements.txt
+
+PySide6>=6.6            # the Qt interface
+numpy>=2.0              # arrays and numerics; np.trapezoid was added in 2.0
+scipy>=1.11             # curve fitting, peak finding, Savitzky-Golay smoothing
+matplotlib>=3.8         # embedded plots, figure export, formula rendering
+XlsxWriter>=3.1         # Excel export with native charts
+openpyxl>=3.1           # reading .xlsx imports, and verifying what we wrote
+
+# --- optional -------------------------------------------------------------
+# OriginLab automation. Without these, the app still exports a LabTalk script
+# package that rebuilds the same project on a machine that has Origin.
+originpro>=1.1.6 ; sys_platform == "win32"
+pywin32>=306 ; sys_platform == "win32"

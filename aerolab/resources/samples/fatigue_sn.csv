@@ -1,0 +1,12 @@
+# Sample: T150-S75 TPU aerogel
+# Tension-tension fatigue, R = 0.1, 1 Hz
+Cycles to failure Nf,Stress amplitude (MPa),R ratio
+32,5.518,0.1
+78,5.1615,0.1
+205,5.0644,0.1
+640,4.6179,0.1
+1850,4.3759,0.1
+5400,3.9708,0.1
+14200,3.7411,0.1
+41000,3.651,0.1
+118000,3.2763,0.1
