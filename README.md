@@ -10,6 +10,9 @@ Built from:
 - Omranpour *et al.* (2024b) — TPU/silica composite aerogels: thermal and cyclic behaviour
 - Omranpour *et al.* (2025) — nanofibrous aerogel fibres: spinning, structure, properties
 
+**User guide:** `AeroLab_Studio_User_Guide.docx` in this folder — step by step, with screenshots
+(`docs/USER_GUIDE.md` is the same material as plain text).
+
 ---
 
 ## What it does
