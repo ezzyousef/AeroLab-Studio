@@ -92,7 +92,16 @@ The basis of each case comes from the case's own source annotation in `core/vali
 | Origin files from two runs with one sample name overwrote each other | **fixed**: unique ids |
 | Origin COM automation is called from the UI thread | **open**: needs a Windows machine with Origin to change and test safely |
 
-## Not done
+## Release
 
-- `AeroLab_Studio_User_Guide.docx` was not regenerated; `docs/USER_GUIDE.md` is the up-to-date text.
-- No Windows build was made.
+- Version 1.1.0. The Word guide was updated: version, the changed passages, and a
+  What's-new section. Its screenshots are still those of 1.0.0.
+- The Windows installer and portable zip are built by `.github/workflows/windows-build.yml`
+  (tests, PyInstaller, self-test of the exe, Inno Setup) and downloadable from each run.
+
+## Still open
+
+- Origin automation runs on the UI thread, so the window waits while Origin builds the
+  project. Moving it to a worker thread needs COM initialised in that thread. That can only
+  be tested on Windows with Origin installed, so it was left as it is rather than changed
+  untested.
