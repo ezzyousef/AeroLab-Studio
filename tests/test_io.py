@@ -264,3 +264,53 @@ def test_export_falls_back_to_a_script_when_asked(tmp_path, analysed):
 def test_export_with_nothing_to_do_is_harmless(tmp_path):
     result = O.export_to_origin([], tmp_path / "empty")
     assert result.books == 0 and result.messages
+
+
+def test_uncommented_instrument_preamble_is_skipped(tmp_path):
+    path = tmp_path / "instron.csv"
+    path.write_text("Sample: NFT-4\nOperator: lab\nDate: 2024-03-01\n\n"
+                    "Strain (%),Stress (MPa)\n0,0\n1,0.2\n2,0.4\n3,0.5\n", encoding="utf-8")
+    ds = R.read_any(path)[0]
+    assert ds.headers == ["Strain", "Stress"] and ds.units == ["%", "MPa"]
+    assert ds.n_rows == 4
+    assert any("NFT-4" in line for line in ds.meta["preamble"])
+
+
+def test_whitespace_header_keeps_units_with_their_names(tmp_path):
+    path = tmp_path / "tga.dat"
+    path.write_text("Temperature (°C)  Weight (%)\n30 100\n100 98.5\n200 97\n", encoding="utf-8")
+    ds = R.read_any(path)[0]
+    assert ds.headers == ["Temperature", "Weight"] and ds.units == ["°C", "%"]
+
+
+def test_number_parsing_does_not_invent_values():
+    assert R._to_float("1.5e-3", ",") == pytest.approx(1.5e-3)
+    assert R._to_float("1.234,5", ",") == pytest.approx(1234.5)
+    assert R._to_float("12,345.6", ".") == pytest.approx(12345.6)
+    assert math.isnan(R._to_float("1,5", "."))          # ambiguous: not silently 15
+    assert R._to_float("1.0D+03", ".") == pytest.approx(1000.0)
+    assert math.isnan(R._to_float("done", "."))
+
+
+def test_old_xls_gives_a_clear_message(tmp_path):
+    path = tmp_path / "old.xls"
+    path.write_bytes(b"\xd0\xcf\x11\xe0not really")
+    with pytest.raises(R.ImportError_, match="xlsx"):
+        R.read_any(path)
+
+
+def test_workbook_with_a_chartsheet_still_imports(tmp_path):
+    openpyxl = pytest.importorskip("openpyxl")
+    import openpyxl.chart
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Strain (%)", "Stress (MPa)"])
+    for i in range(5):
+        ws.append([i * 1.0, i * 0.1])
+    chart = openpyxl.chart.ScatterChart()
+    chart.add_data(openpyxl.chart.Reference(ws, min_col=2, min_row=1, max_row=6), titles_from_data=True)
+    wb.create_chartsheet("Chart").add_chart(chart)
+    path = tmp_path / "with_chart.xlsx"
+    wb.save(path)
+    datasets = R.read_any(path)
+    assert len(datasets) == 1 and datasets[0].n_rows == 5

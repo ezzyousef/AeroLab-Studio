@@ -191,10 +191,19 @@ def _parse_delimited(lines: Sequence[str], name: str, source: str, *,
     if not body:
         raise ImportError_(f"{name}: no data rows found")
 
+    if header_row is None and units_row is None:
+        # Instrument exports often open with "Sample: X", "Date: ..." lines that carry no
+        # comment character. Drop everything before the header of the main numeric block.
+        start = _table_start(body, delimiter)
+        preamble += [ln.strip() for ln in body[:start] if ln.strip()]
+        body = body[start:]
+
     delimiter = delimiter or _sniff_delimiter(body)
     rows = _split_rows(body, delimiter)
     rows = [r for r in rows if any(cell.strip() for cell in r)]
     width = _modal_width(rows)
+    if delimiter == "whitespace" and rows and len(rows[0]) > width:
+        rows[0] = _rejoin_units(rows[0], width)
     rows = [(r + [""] * width)[:width] for r in rows]
 
     decimal = decimal or _sniff_decimal(rows, delimiter)
@@ -234,6 +243,63 @@ def _parse_delimited(lines: Sequence[str], name: str, source: str, *,
         meta["preamble"] = preamble[:40]
     return Dataset(name=name, headers=headers, columns=columns, units=units,
                    source=source, meta=meta, text_columns=text_columns)
+
+
+_NUMBER_RE = re.compile(r"^[+-]?(\d[\d.,]*|[.,]\d+)([eEdD][+-]?\d+)?%?$")
+
+
+def _numberish(line: str) -> int:
+    """How many tokens on a line look like numbers (delimiter-agnostic)."""
+    return sum(1 for t in re.split(r"[\s,;|]+", line.strip()) if t and _NUMBER_RE.match(t))
+
+
+def _table_start(body: Sequence[str], delimiter: str | None) -> int:
+    """Index of the first header line of the main table (or its first data line if none).
+
+    The data block is the first run of >= 3 consecutive lines with >= 2 numbers each (or
+    the rest of the file if shorter). Above it, consecutive text lines with as many fields
+    as a data line are the header block (Origin writes Long Name / Units / Comments). If
+    there are none, the single text line just above is taken as the header. Anything
+    earlier is preamble ("Sample: X", "Date: ...").
+    """
+    n = len(body)
+    data = 0
+    for i in range(n):
+        run = body[i:i + 3]
+        if all(_numberish(ln) >= 2 for ln in run) and (len(run) == 3 or i + len(run) == n):
+            data = i
+            break
+    else:
+        return 0
+    if data == 0:
+        return 0
+    # Sniff with the line above included: "30,000<TAB>99,99" alone reads as comma-separated.
+    delim = delimiter or _sniff_delimiter(body[data - 1:data + 60])
+    width = len(_split_rows([body[data]], delim)[0])
+
+    def fields(line: str) -> int:
+        return len(_split_rows([line], delim)[0])
+
+    top = data
+    while top > 0 and body[top - 1].strip() and _numberish(body[top - 1]) < 2 and (
+            fields(body[top - 1]) == width
+            or (delim == "whitespace" and fields(body[top - 1]) >= width)):
+        top -= 1
+    if top == data and body[data - 1].strip() and _numberish(body[data - 1]) < 2:
+        top = data - 1
+    return top
+
+
+def _rejoin_units(tokens: Sequence[str], width: int) -> list[str]:
+    """Whitespace header "Temperature (°C) Weight (%)" -> ["Temperature (°C)", "Weight (%)"]."""
+    out: list[str] = []
+    for tok in tokens:
+        if out and (tok.startswith(("(", "[")) or out[-1].count("(") > out[-1].count(")")
+                    or out[-1].count("[") > out[-1].count("]")):
+            out[-1] = f"{out[-1]} {tok}"
+        else:
+            out.append(tok)
+    return out if len(out) == width else list(tokens)
 
 
 def _split_rows(body: Sequence[str], delimiter: str) -> list[list[str]]:
@@ -291,10 +357,17 @@ def _to_float(cell: str, decimal: str) -> float:
     if not c or c.lower() in {"nan", "na", "n/a", "-", "--", "null", "none", "inf%"}:
         return math.nan
     if decimal == ",":
-        c = c.replace(".", "").replace(",", ".")
-    else:
-        c = c.replace(",", "") if c.count(",") and re.fullmatch(r"[+-]?[\d,]+\.?\d*", c) else c
-    c = c.replace("D", "E").replace("d", "e")
+        # "1.234,5" -> 1234.5, but a lone point ("1.5e-3") is a decimal point, not grouping
+        if re.fullmatch(r"[+-]?\d{1,3}(\.\d{3})+(,\d*)?", c):
+            c = c.replace(".", "")
+        c = c.replace(",", ".")
+    elif "," in c:
+        # Only true thousands grouping ("12,345.6") is stripped; "1,5" in a point-decimal
+        # file is ambiguous and is left unparsed rather than read as 15.
+        if re.fullmatch(r"[+-]?\d{1,3}(,\d{3})+(\.\d*)?", c):
+            c = c.replace(",", "")
+    if re.fullmatch(r"[+-]?(\d+\.?\d*|\.\d+)[dD][+-]?\d+", c):
+        c = c.replace("D", "E").replace("d", "e")       # Fortran exponent
     if c.endswith("%"):
         c = c[:-1]
     try:
@@ -382,11 +455,22 @@ def sheet_names(path: str | Path) -> list[str]:
         wb.close()
 
 
+def _excel_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return repr(value)                              # full precision, always "." decimal
+    return str(value)
+
+
 def read_excel(path: str | Path, sheet: str | int | None = None, **kwargs: Any) -> list[Dataset]:
     """Read one sheet, or every sheet that holds numbers when `sheet` is None."""
     import openpyxl
 
     p = Path(path)
+    if p.suffix.lower() == ".xls":
+        raise ImportError_(f"{p.name}: the old binary .xls format cannot be read. Open it in "
+                           "Excel or LibreOffice and save it as .xlsx (or .csv), then import that.")
     wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
     try:
         if sheet is None:
@@ -398,15 +482,17 @@ def read_excel(path: str | Path, sheet: str | int | None = None, **kwargs: Any) 
         out: list[Dataset] = []
         for sheet_name in wanted:
             ws = wb[sheet_name]
-            grid = [["" if c is None else str(c) for c in row]
-                    for row in ws.iter_rows(values_only=True)]
+            if not hasattr(ws, "iter_rows"):              # a chartsheet holds no cells
+                continue
+            grid = [[_excel_cell(c) for c in row] for row in ws.iter_rows(values_only=True)]
             grid = [r for r in grid if any(str(c).strip() for c in r)]
             if len(grid) < 2:
                 continue
             width = _modal_width(grid)
             grid = [(r + [""] * width)[:width] for r in grid]
             try:
-                ds = _parse_grid(grid, name=f"{p.stem} · {sheet_name}", source=str(p), **kwargs)
+                ds = _parse_grid(grid, name=f"{p.stem} · {sheet_name}", source=str(p),
+                                 **{"decimal": ".", **kwargs})
             except ImportError_:
                 continue
             ds.meta["sheet"] = sheet_name
