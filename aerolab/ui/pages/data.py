@@ -281,6 +281,15 @@ class DataPage(Page):
         m = M.get(self.measure_combo.currentData())
         mapping = m.match_columns(ds.headers)
         guessed = set(M.guessed_channels(m, ds.headers, mapping))
+        # Drop the previous dataset's column pickers first; when the table was only
+        # shrunk, the pickers of removed rows stayed on screen stacked at the top left.
+        for r in range(self.map_table.rowCount()):
+            widget = self.map_table.cellWidget(r, 1)
+            if widget is not None:
+                self.map_table.removeCellWidget(r, 1)
+                widget.hide()                     # deleteLater only runs at the next loop pass
+                widget.deleteLater()
+        self.map_table.setRowCount(0)
         self.map_table.setRowCount(len(m.channels))
         missing = 0
         for r, channel in enumerate(m.channels):

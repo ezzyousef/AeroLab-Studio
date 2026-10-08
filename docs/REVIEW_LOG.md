@@ -60,8 +60,9 @@ Status:
 | Mapping table too narrow to read the chosen column | **fixed** |
 | Toasts clipped their own text | **fixed** |
 | White boxes behind the summary tile labels | **fixed** |
-| Fit range not drawn on every graph (for example the BET window on the isotherm) | **open**: the fitted points are drawn on the BET and modulus plots; shading the range on the other graphs was not done this round |
-| Dark-mode contrast of some muted text | **open**: not re-measured this round |
+| Fit range not drawn on every graph (for example the BET window on the isotherm) | **fixed**: the modulus window, the BET range (on both the isotherm and the BET plot) and the DSC peak integration limits are shaded and named in the legend |
+| Dark-mode contrast of some muted text | **fixed**: every text/background pair was measured against WCAG AA (4.5:1). Muted text already passed. Two pairs failed in dark mode: white text on the accent colour (3.6:1) and accent-coloured text on raised panels (4.4:1). Both were fixed with a lighter accent and dark text on accent buttons. A test now checks these pairs. |
+| (found while checking) After "Analyse all", leftover column pickers piled up in the mapping table | **fixed** |
 
 ## Validation and claims
 

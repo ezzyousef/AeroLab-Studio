@@ -7,7 +7,7 @@ batch exports.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -38,6 +38,8 @@ class PlotData:
     styles: list[S.SeriesStyle]
     roles: list[str]
     note: str = ""
+    # Shaded x ranges the analysis used: (low, high, legend label). Empty for most plots.
+    spans: list[tuple[float, float, str]] = field(default_factory=list)
 
     def __len__(self) -> int:
         return len(self.labels)
@@ -104,7 +106,29 @@ def build_plot_data(plot: Plot, result: AnalysisResult, *, theme: str = "light",
 
     return PlotData(plot=plot, title=title or plot.title, x_axis=plot.x_axis,
                     y_axis=plot.y_axis, xscale=xscale, yscale=yscale, labels=labels,
-                    x=xs, y=ys, styles=styles, roles=roles, note=plot.note)
+                    x=xs, y=ys, styles=styles, roles=roles, note=plot.note,
+                    spans=fit_spans(plot, result))
+
+
+def fit_spans(plot: Plot, result: AnalysisResult) -> list[tuple[float, float, str]]:
+    """The x ranges an analysis actually used, so the graph shows what was fitted or
+    integrated: the modulus window, the BET window, the DSC peak limits."""
+    meta = result.meta or {}
+    spans: list[tuple[float, float, str]] = []
+    try:
+        if result.kind == "stress_strain" and plot.id == "curve" and meta.get("modulus_window"):
+            lo, hi = meta["modulus_window"]
+            spans.append((float(lo), float(hi), "Modulus window"))
+        elif result.kind == "sorption" and plot.id in ("isotherm", "bet") and meta.get("range"):
+            lo, hi = meta["range"]
+            spans.append((float(lo), float(hi), "BET range"))
+        elif result.kind == "dsc" and plot.id == "dsc":
+            for n, tr in enumerate(meta.get("transitions", [])):
+                spans.append((float(tr["onset"]), float(tr["end"]),
+                              "Peak integration limits" if n == 0 else ""))
+    except (TypeError, ValueError, KeyError):
+        return []
+    return [(lo, hi, lab) for lo, hi, lab in spans if np.isfinite(lo) and np.isfinite(hi) and hi > lo]
 
 
 _ROLE_WORDS = {"fit", "data", "measured", "curve", "points", "plot", "branch"}
@@ -165,6 +189,9 @@ def render_figure(data: PlotData, *, theme: str = "light", size: str = "screen",
             ax.set_axis_off()
             return figure
 
+        for lo, hi, label in data.spans:
+            ax.axvspan(lo, hi, color=t.muted, alpha=0.13, linewidth=0, zorder=0,
+                       label=label or None)
         for x, y, st in zip(data.x, data.y, data.styles):
             ok = np.isfinite(x) & np.isfinite(y)
             ax.plot(x[ok], y[ok], **st.mpl_kwargs(background=t.background))
@@ -180,7 +207,7 @@ def render_figure(data: PlotData, *, theme: str = "light", size: str = "screen",
         if data.xscale == "log" or data.yscale == "log":
             ax.grid(True, which="minor", color=t.grid, linewidth=0.45, alpha=0.5)
 
-        if legend and len(data) > 1:
+        if legend and (len(data) > 1 or data.spans):
             if len(data) > _LEGEND_INSIDE_MAX:
                 # Too many traces to sit over the data without hiding it: move it outside.
                 leg = ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0),

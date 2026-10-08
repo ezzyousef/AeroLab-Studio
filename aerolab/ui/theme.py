@@ -22,6 +22,7 @@ _EXTRA = {
         "good": "#0B7A4B", "warn": "#9A6400", "bad": "#B3261E",
         "good_bg": "#E7F6EE", "warn_bg": "#FDF3DC", "bad_bg": "#FCEBEA",
         "field": "#FFFFFF", "disabled": "#9AA1AB",
+        "on_accent": "#FFFFFF",
     },
     "dark": {
         "rail": "#0D1014", "rail_text": "#9AA3AF", "rail_active": "#FFFFFF",
@@ -31,10 +32,13 @@ _EXTRA = {
         "good": "#4ADE80", "warn": "#FBBF24", "bad": "#F87171",
         "good_bg": "#13291F", "warn_bg": "#2A2213", "bad_bg": "#2C1718",
         "field": "#1A1E24", "disabled": "#5C646F",
+        # Measured against WCAG AA (4.5:1): white on the dark accent was 3.6:1 and the
+        # accent as text on raised panels 4.4:1. Dark text on a lighter accent (ACCENTS) fixes both.
+        "on_accent": "#0B1220",
     },
 }
 
-ACCENTS = {"light": "#0072B2", "dark": "#3987E5"}
+ACCENTS = {"light": "#0072B2", "dark": "#4A93EA"}
 
 
 def colours(theme: str = "light") -> dict[str, str]:
@@ -45,6 +49,7 @@ def colours(theme: str = "light") -> dict[str, str]:
         "grid": t.grid, "accent": t.accent,
     }
     c.update(_EXTRA.get(theme, _EXTRA["light"]))
+    c["accent"] = ACCENTS.get(theme, c["accent"])
     return c
 
 
@@ -76,7 +81,7 @@ QPushButton#NavButton {{
 }}
 QPushButton#NavButton:hover {{ background: rgba(255,255,255,0.07); color: #FFFFFF; }}
 QPushButton#NavButton:checked {{
-    background: {c['accent']}; color: {c['rail_active']}; font-weight: 600;
+    background: {c['accent']}; color: {c['on_accent']}; font-weight: 600;
 }}
 #NavBadge {{
     background: rgba(255,255,255,0.14); color: #FFFFFF; border-radius: 8px;
@@ -115,7 +120,7 @@ QPushButton:hover {{ background: {c['hover']}; border-color: {c['accent']}; }}
 QPushButton:pressed {{ background: {c['selected']}; }}
 QPushButton:disabled {{ color: {c['disabled']}; border-color: {c['border']}; background: {c['sunken']}; }}
 QPushButton#Primary {{
-    background: {c['accent']}; color: #FFFFFF; border: 1px solid {c['accent']};
+    background: {c['accent']}; color: {c['on_accent']}; border: 1px solid {c['accent']};
     font-weight: 600; padding: 8px 18px;
 }}
 QPushButton#Primary:hover {{ background: {c['accent']}; border-color: {c['fg']}; }}
@@ -128,13 +133,13 @@ QPushButton#Chip {{
     background: {c['raised']}; border: 1px solid {c['border']};
     border-radius: 14px; padding: 5px 13px; font-size: 12px; font-weight: 500;
 }}
-QPushButton#Chip:checked {{ background: {c['accent']}; color: #FFFFFF; border-color: {c['accent']}; }}
+QPushButton#Chip:checked {{ background: {c['accent']}; color: {c['on_accent']}; border-color: {c['accent']}; }}
 
 /* ---------- inputs ---------- */
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {{
     background: {c['field']}; color: {c['fg']};
     border: 1px solid {c['border_strong']}; border-radius: 8px;
-    padding: 6px 10px; selection-background-color: {c['accent']}; selection-color: #FFFFFF;
+    padding: 6px 10px; selection-background-color: {c['accent']}; selection-color: {c['on_accent']};
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus {{
     border: 1px solid {c['accent']};
@@ -150,7 +155,7 @@ QComboBox::down-arrow {{
 }}
 QComboBox QAbstractItemView {{
     background: {c['surface']}; color: {c['fg']}; border: 1px solid {c['border_strong']};
-    border-radius: 8px; selection-background-color: {c['accent']}; selection-color: #FFFFFF;
+    border-radius: 8px; selection-background-color: {c['accent']}; selection-color: {c['on_accent']};
     padding: 4px; outline: none;
 }}
 QCheckBox {{ spacing: 8px; }}
@@ -252,7 +257,7 @@ QSplitter::handle:hover {{ background: {c['border']}; }}
 #PaletteInput:focus {{ border: none; border-bottom: 1px solid {c['accent']}; }}
 #PaletteList {{ background: transparent; border: none; }}
 #PaletteList::item {{ padding: 9px 14px; border-radius: 8px; }}
-#PaletteList::item:selected {{ background: {c['accent']}; color: #FFFFFF; }}
+#PaletteList::item:selected {{ background: {c['accent']}; color: {c['on_accent']}; }}
 
 QFrame#HLine {{ background: {c['border']}; max-height: 1px; border: none; }}
 QFrame#VLine {{ background: {c['border']}; max-width: 1px; border: none; }}

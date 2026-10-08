@@ -355,3 +355,52 @@ def test_plot_merge_keeps_every_series(analysed):
     merged, _roles = _merge([run, run], m.plots[0], show_fits=False)
     # two data series per run, two runs with the same name: four distinct curves
     assert len(merged) == 4
+
+
+def test_graphs_shade_the_range_the_analysis_used(analysed):
+    from aerolab.core import measurements as M
+    from aerolab.viz import figures as F
+
+    for mid, pid in (("stress_strain", "curve"), ("sorption", "bet"), ("dsc", "dsc")):
+        plot = next(p for p in M.get(mid).plots if p.id == pid)
+        spans = F.build_plot_data(plot, analysed[mid]).spans
+        assert spans and all(hi > lo for lo, hi, _ in spans), mid
+
+
+def test_text_on_coloured_backgrounds_meets_wcag_aa():
+    from aerolab.ui.theme import colours
+
+    def lum(h):
+        r, g, b = (int(h.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        f = lambda c: c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4  # noqa: E731
+        return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+    def ratio(a, b):
+        la, lb = sorted((lum(a), lum(b)), reverse=True)
+        return (la + 0.05) / (lb + 0.05)
+
+    for theme in ("light", "dark"):
+        c = colours(theme)
+        assert ratio(c["on_accent"], c["accent"]) >= 4.5, theme
+        for bg in ("bg", "raised"):
+            for fg in ("fg", "muted", "accent"):
+                assert ratio(c[fg], c[bg]) >= 4.5, (theme, fg, bg)
+
+
+def test_mapping_table_keeps_only_the_current_pickers(qapp):
+    from PySide6.QtWidgets import QComboBox
+    from aerolab.ui.app import MainWindow
+    from aerolab.ui.state import Session
+
+    window = MainWindow(Session())
+    window.show()
+    window.go_to("data")
+    page = window.pages["data"]
+    page.load_samples()
+    page.analyse_all()
+    qapp.processEvents()
+    current = {page.map_table.cellWidget(r, 1) for r in range(page.map_table.rowCount())}
+    stale = [w for w in page.map_table.findChildren(QComboBox)
+             if w not in current and not w.isHidden()]
+    assert not stale
+    window.close()
