@@ -33,6 +33,7 @@ class Metric:
     value: float
     unit: str = ""
     note: str = ""
+    se: float | None = None       # 1-sigma standard error, when the method provides one
 
     def as_row(self) -> tuple[str, float, str, str]:
         return self.name, self.value, self.unit, self.note
@@ -113,12 +114,17 @@ def _interp_crossing(x: np.ndarray, y: np.ndarray, level: float) -> float | None
 # ---------------------------------------------------------------------------
 def analyze_stress_strain(strain_pct: Sequence[float], stress_mpa: Sequence[float], *,
                           modulus_range: tuple[float, float] | None = None,
-                          offset_yield: float = 0.002, min_window: int = 8) -> AnalysisResult:
+                          offset_yield: float = 0.002, min_window: int = 8,
+                          min_span_pct: float | None = None,
+                          break_fraction: float = 0.1) -> AnalysisResult:
     """Modulus, strength, elongation, toughness and offset yield from one tensile curve.
 
     strain_pct: engineering strain in %, stress_mpa: engineering stress in MPa.
-    `modulus_range` fixes the fit window in % strain; otherwise the most linear
-    early segment is found automatically (highest R² sliding window).
+    `modulus_range` fixes the fit window in % strain; otherwise the most linear early
+    window spanning at least `min_span_pct` % strain is found automatically.
+    Break is where stress first falls below `break_fraction` × UTS after the maximum;
+    points after it (the load cell reading zero after failure) are ignored.
+    `offset_yield` <= 0 switches the offset yield off.
     """
     e, s = _clean_xy(strain_pct, stress_mpa, sort=False, name="stress-strain")
     if np.any(np.diff(e) < 0):
@@ -128,7 +134,13 @@ def analyze_stress_strain(strain_pct: Sequence[float], stress_mpa: Sequence[floa
     i_max = int(np.argmax(s))
     uts = float(s[i_max])
     strain_at_uts = float(e[i_max])
+    broke = np.flatnonzero(s[i_max:] < break_fraction * uts)
+    i_break = i_max + int(broke[0]) - 1 if broke.size else e.size - 1
+    i_break = max(i_break, i_max)
+    e, s = e[:i_break + 1], s[:i_break + 1]
     eab = float(e[-1])
+    break_note = ("last point before stress fell below "
+                  f"{break_fraction * 100:.0f} % of UTS" if broke.size else "last data point (no break detected)")
 
     # Young's modulus -------------------------------------------------------
     if modulus_range is not None:
@@ -139,11 +151,12 @@ def analyze_stress_strain(strain_pct: Sequence[float], stress_mpa: Sequence[floa
         fit = stats.linregress(e[mask] / 100.0, s[mask])
         modulus, r2, window = float(fit.slope), float(fit.rvalue ** 2), (float(lo), float(hi))
     else:
-        modulus, r2, window = _auto_modulus(e, s, min_window)
+        span = min_span_pct if min_span_pct is not None else max(0.5, 0.02 * strain_at_uts)
+        modulus, r2, window = _auto_modulus(e, s, min_window, min_span_pct=span)
 
     # offset yield ----------------------------------------------------------
     yield_stress = yield_strain = float("nan")
-    if math.isfinite(modulus) and modulus > 0:
+    if offset_yield > 0 and math.isfinite(modulus) and modulus > 0:
         offset_line = modulus * (e / 100.0 - offset_yield)
         diff = s - offset_line
         cross = _interp_crossing(e, diff, 0.0)
@@ -158,61 +171,78 @@ def analyze_stress_strain(strain_pct: Sequence[float], stress_mpa: Sequence[floa
         if m.sum() >= 2:
             resilience = float(np.trapezoid(s[m], e[m] / 100.0))
 
+    yield_note = (f"{offset_yield * 100:.1f} % offset" if offset_yield > 0 else
+                  "offset yield switched off (rarely meaningful for elastomers)")
     metrics = [
         Metric("Young's modulus", modulus, "MPa", f"linear fit {window[0]:.2f}–{window[1]:.2f} % strain, R² = {r2:.4f}"),
         Metric("Ultimate tensile strength", uts, "MPa"),
         Metric("Strain at UTS", strain_at_uts, "%"),
-        Metric("Elongation at break", eab, "%"),
-        Metric("Toughness", toughness, "MJ/m^3", "area under the curve"),
-        Metric("Yield stress", yield_stress, "MPa", f"{offset_yield * 100:.1f} % offset"),
+        Metric("Elongation at break", eab, "%", break_note),
+        Metric("Toughness", toughness, "MJ/m^3", "area under the curve up to break"),
+        Metric("Yield stress", yield_stress, "MPa", yield_note),
         Metric("Yield strain", yield_strain, "%"),
         Metric("Resilience", resilience, "MJ/m^3", "area up to yield"),
-        Metric("Specific strength", uts, "MPa", "divide by density for MPa·cm³/g"),
     ]
     curves = {
         "stress-strain": (e, s),
         "modulus fit": (np.array(window), np.array(window) / 100.0 * modulus),
     }
     return AnalysisResult("stress_strain", metrics, curves,
-                          {"points": int(e.size), "modulus_window": window, "modulus_r2": r2})
+                          {"points": int(e.size), "modulus_window": window, "modulus_r2": r2,
+                           "break_index": int(i_break)})
 
 
-def _auto_modulus(e: np.ndarray, s: np.ndarray, min_window: int) -> tuple[float, float, tuple[float, float]]:
+def _auto_modulus(e: np.ndarray, s: np.ndarray, min_window: int,
+                  min_span_pct: float = 0.5) -> tuple[float, float, tuple[float, float]]:
     """Initial tangent modulus: the most linear early window whose slope is near the steepest.
 
-    Windows of several lengths are tried inside the first part of the curve. Requiring the
-    slope to be close to the steepest early slope keeps the fit on the initial elastic
-    region instead of drifting onto a flatter, equally straight part further along.
+    Every window in the first half of the curve that holds at least `min_window` points
+    AND spans at least `min_span_pct` % strain is a candidate; slopes and R² for all of
+    them come from cumulative sums, so dense files stay fast. The span floor is what keeps
+    a short, noisy run of points from posing as the steepest (and "most linear") region.
+    Among candidates whose slope is within 70 % of the steepest, the highest R² wins.
     """
     n = e.size
     if n < 4:
         return float("nan"), float("nan"), (float(e[0]), float(e[-1]))
+    x = e / 100.0
+    limit = max(4, int(n * 0.5))
+    xs, ys = x[:limit], s[:limit]
+    cx = np.concatenate([[0.0], np.cumsum(xs)])
+    cy = np.concatenate([[0.0], np.cumsum(ys)])
+    cxx = np.concatenate([[0.0], np.cumsum(xs * xs)])
+    cyy = np.concatenate([[0.0], np.cumsum(ys * ys)])
+    cxy = np.concatenate([[0.0], np.cumsum(xs * ys)])
 
-    search_limit = max(4, int(n * 0.5))                       # only the first half of the curve
-    lengths = sorted({max(4, min_window // 2), min_window, int(n * 0.05), int(n * 0.10), int(n * 0.15)})
-    lengths = [L for L in lengths if 3 < L <= max(4, search_limit)]
-    if not lengths:
-        lengths = [max(4, min(search_limit, n // 2))]
-
-    candidates: list[tuple[float, float, tuple[float, float]]] = []   # (slope, r2, window)
-    for win in lengths:
-        for start in range(0, max(1, search_limit - win + 1)):
-            stop = start + win
-            seg_e, seg_s = e[start:stop] / 100.0, s[start:stop]
-            if seg_e.size < 3 or np.ptp(seg_e) <= 0:
-                continue
-            fit = stats.linregress(seg_e, seg_s)
-            if fit.slope > 0:
-                candidates.append((float(fit.slope), float(fit.rvalue ** 2), (float(e[start]), float(e[stop - 1]))))
-    if not candidates:
+    lengths = sorted({max(4, min_window), int(limit * 0.05), int(limit * 0.10), int(limit * 0.2), int(limit * 0.3)})
+    lengths = [L for L in lengths if max(4, min_window) <= L <= limit]
+    best_sets = []
+    for L in lengths:
+        st = np.arange(0, limit - L + 1)
+        en = st + L
+        sx, sy = cx[en] - cx[st], cy[en] - cy[st]
+        sxx, syy, sxy = cxx[en] - cxx[st], cyy[en] - cyy[st], cxy[en] - cxy[st]
+        vx = sxx - sx * sx / L
+        vy = syy - sy * sy / L
+        cov = sxy - sx * sy / L
+        with np.errstate(divide="ignore", invalid="ignore"):
+            slope = cov / vx
+            r2 = cov * cov / (vx * vy)
+        span = (e[en - 1] - e[st])
+        ok = (vx > 0) & (vy > 0) & (slope > 0) & (span >= min_span_pct)
+        if ok.any():
+            best_sets.append((slope[ok], r2[ok], st[ok], en[ok] - 1))
+    if not best_sets:
         idx = max(2, int(n * 0.05))
         slope = float((s[idx] - s[0]) / ((e[idx] - e[0]) / 100.0)) if e[idx] != e[0] else float("nan")
         return slope, float("nan"), (float(e[0]), float(e[idx]))
-
-    steepest = max(c[0] for c in candidates)
-    near_steepest = [c for c in candidates if c[0] >= 0.7 * steepest]
-    best = max(near_steepest or candidates, key=lambda c: c[1])
-    return best[0], best[1], best[2]
+    slopes = np.concatenate([b[0] for b in best_sets])
+    r2s = np.concatenate([b[1] for b in best_sets])
+    starts = np.concatenate([b[2] for b in best_sets])
+    stops = np.concatenate([b[3] for b in best_sets])
+    near = slopes >= 0.7 * slopes.max()
+    k = int(np.flatnonzero(near)[np.argmax(r2s[near])])
+    return float(slopes[k]), float(r2s[k]), (float(e[starts[k]]), float(e[stops[k]]))
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +330,7 @@ def analyze_cyclic_tension(strain_pct: Sequence[float], stress_mpa: Sequence[flo
         Metric("Stress softening", (first["peak_stress"] - last["peak_stress"]) / first["peak_stress"] * 100.0
                if first["peak_stress"] else float("nan"), "%", "drop in peak stress from first to last cycle"),
         Metric("Ratcheting strain, last cycle", (last["peak_strain"] + last["permanent_set"]) / 2.0, "%",
-               "εr = (εmax + εmin)/2"),
+               "εr = (εmax + εmin)/2, with εmin taken as the cycle's permanent set"),
     ]
     return AnalysisResult("cyclic_tension", metrics, loops, {"per_cycle": rows})
 
@@ -308,35 +338,77 @@ def analyze_cyclic_tension(strain_pct: Sequence[float], stress_mpa: Sequence[flo
 # ---------------------------------------------------------------------------
 # 3. fatigue
 # ---------------------------------------------------------------------------
-def fit_sn_basquin(cycles: Sequence[float], stress_amplitude: Sequence[float]) -> AnalysisResult:
-    """Fit σa = σ'f (2Nf)^b on log–log axes."""
+def _life_on_stress(two_n: np.ndarray, amp: np.ndarray) -> dict:
+    """Fit log(2N) = a + m·log(amplitude) — life is the dependent variable, because the
+    scatter in a fatigue test is in life (the ASTM E739 convention) — and express it as
+    amplitude = coef·(2N)^exp with standard errors from the delta method."""
+    lx, ly = np.log10(amp), np.log10(two_n)
+    fit = stats.linregress(lx, ly)
+    m, a = float(fit.slope), float(fit.intercept)
+    if m == 0:
+        raise ValueError("fatigue: life does not change with amplitude, so no exponent can be fitted")
+    exp_ = 1.0 / m
+    coef = 10.0 ** (-a / m)
+    n = lx.size
+    se_m = float(fit.stderr)
+    se_a = float(fit.intercept_stderr)
+    cov_am = -float(np.mean(lx)) * se_m ** 2          # cov(intercept, slope) of an OLS line
+    se_exp = se_m / m ** 2
+    # log10(coef) = -a/m ; gradient wrt (a, m) = (-1/m, a/m²)
+    g_a, g_m = -1.0 / m, a / m ** 2
+    var_logc = g_a ** 2 * se_a ** 2 + g_m ** 2 * se_m ** 2 + 2 * g_a * g_m * cov_am
+    se_coef = coef * math.log(10.0) * math.sqrt(max(var_logc, 0.0))
+    t = float(stats.t.ppf(0.975, n - 2)) if n > 2 else float("nan")
+    return {"exp": exp_, "coef": coef, "se_exp": se_exp, "se_coef": se_coef, "t": t,
+            "r2": float(fit.rvalue ** 2), "n": n}
+
+
+def fit_sn_basquin(cycles: Sequence[float], stress_amplitude: Sequence[float], *,
+                   life_at_fraction: float = 0.5) -> AnalysisResult:
+    """Fit σa = σ'f (2Nf)^b.
+
+    The regression is log(2N) on log(σa) and is then inverted, because the scatter is in
+    life (ASTM E739); regressing stress on life biases b towards zero when lives scatter.
+    Standard errors and 95 % intervals (t with n−2 degrees of freedom) are reported.
+    """
     n, sa = _clean_xy(cycles, stress_amplitude, sort=True, name="S-N")
     if np.any(n <= 0) or np.any(sa <= 0):
         raise ValueError("S-N: cycles and stress amplitudes must be positive")
-    if np.ptp(n) <= 0:
+    if np.ptp(n) <= 0 or np.ptp(sa) <= 0:
         # All the specimens lasted the same number of cycles, so the line has no slope.
         # Refusing beats handing back a NaN exponent that reads like a measurement.
-        raise ValueError("S-N: every specimen has the same life, so no Basquin exponent can "
-                         "be fitted — at least two different lives are needed")
-    fit = stats.linregress(np.log10(2.0 * n), np.log10(sa))
-    b = float(fit.slope)
-    sigma_f = float(10.0 ** fit.intercept)
-    pred = sigma_f * (2.0 * n) ** b
-    grid = np.logspace(np.log10(n.min() * 0.5), np.log10(n.max() * 2.0), 200)
+        raise ValueError("S-N: every specimen has the same life (or amplitude), so no Basquin exponent "
+                         "can be fitted — at least two different lives are needed")
+    f = _life_on_stress(2.0 * n, sa)
+    b, sigma_f = f["exp"], f["coef"]
+    two_n = 2.0 * n
+    grid = np.logspace(np.log10(two_n.min() * 0.5), np.log10(two_n.max() * 2.0), 200)
+    frac = float(life_at_fraction)
+    life = float(0.5 * frac ** (1.0 / b)) if 0 < frac < 1 else float("nan")
+    ci = lambda se: f"95 % CI ± {f['t'] * se:.3g}" if math.isfinite(f["t"]) else "too few points for a CI"  # noqa: E731
     metrics = [
-        Metric("Fatigue strength coefficient σ'f", sigma_f, "MPa"),
-        Metric("Fatigue strength exponent b", b, "-"),
-        Metric("R²", _r2(np.log10(sa), np.log10(pred)), "-"),
-        Metric("Predicted life at 50 % of σ'f", float(0.5 * (0.5) ** (1.0 / b)), "cycles"),
+        Metric("Fatigue strength coefficient σ'f", sigma_f, "MPa",
+               f"± {f['se_coef']:.3g} (1 SE); {ci(f['se_coef'])}; log 2N regressed on log σa", se=f["se_coef"]),
+        Metric("Fatigue strength exponent b", b, "-", f"± {f['se_exp']:.3g} (1 SE); {ci(f['se_exp'])}",
+               se=f["se_exp"]),
+        Metric("R²", f["r2"], "-", "of log 2N on log σa"),
+        Metric(f"Predicted life at {frac * 100:g} % of σ'f", life, "cycles",
+               "extrapolation of the fitted line — check it lies within the tested range"),
     ]
     return AnalysisResult("sn_curve", metrics,
-                          {"data": (n, sa), "fit": (grid, sigma_f * (2.0 * grid) ** b)},
-                          {"sigma_f": sigma_f, "b": b})
+                          {"data": (two_n, sa), "fit": (grid, sigma_f * grid ** b)},
+                          {"sigma_f": sigma_f, "b": b, "x_is_reversals": True})
 
 
 def fit_strain_life(cycles: Sequence[float], elastic_amplitude: Sequence[float],
-                    plastic_amplitude: Sequence[float], *, modulus: float | None = None) -> AnalysisResult:
-    """Fit the elastic and plastic branches of the strain-life curve."""
+                    plastic_amplitude: Sequence[float], *, modulus: float | None = None,
+                    bootstrap: int = 400, seed: int = 0) -> AnalysisResult:
+    """Fit the elastic and plastic branches of the strain-life curve.
+
+    Each branch is fitted as log(2N) on log(amplitude) and inverted (ASTM E739 style).
+    The transition life is very sensitive to b and c, so its 95 % interval comes from a
+    bootstrap over specimens.
+    """
     n = np.asarray(cycles, float).ravel()
     ea = np.asarray(elastic_amplitude, float).ravel()
     pa = np.asarray(plastic_amplitude, float).ravel()
@@ -346,57 +418,93 @@ def fit_strain_life(cycles: Sequence[float], elastic_amplitude: Sequence[float],
     n, ea, pa = n[ok], ea[ok], pa[ok]
     if n.size < 3:
         raise ValueError("strain-life: need at least 3 valid points")
-
-    el = stats.linregress(np.log10(2.0 * n), np.log10(ea))
-    pl = stats.linregress(np.log10(2.0 * n), np.log10(pa))
-    b, c = float(el.slope), float(pl.slope)
-    sigma_f_over_E = float(10.0 ** el.intercept)
-    eps_f = float(10.0 ** pl.intercept)
+    two_n = 2.0 * n
+    el = _life_on_stress(two_n, ea)
+    pl = _life_on_stress(two_n, pa)
+    b, c = el["exp"], pl["exp"]
+    sigma_f_over_E, eps_f = el["coef"], pl["coef"]
     sigma_f = sigma_f_over_E * modulus if modulus else float("nan")
 
-    two_nt = float("nan")
-    if b != c:
-        two_nt = float((eps_f / sigma_f_over_E) ** (1.0 / (b - c)))
+    def transition(sfe, ef, bb, cc):
+        return float((ef / sfe) ** (1.0 / (bb - cc))) if bb != cc else float("nan")
 
-    grid = np.logspace(np.log10(max(n.min() * 0.5, 1e-3)), np.log10(n.max() * 5.0), 240)
+    two_nt = transition(sigma_f_over_E, eps_f, b, c)
+    lo_nt = hi_nt = float("nan")
+    if bootstrap and n.size >= 4:
+        rng = np.random.default_rng(seed)
+        draws = []
+        for _ in range(int(bootstrap)):
+            k = rng.integers(0, n.size, n.size)
+            if np.ptp(ea[k]) <= 0 or np.ptp(pa[k]) <= 0:
+                continue
+            try:
+                e2, p2 = _life_on_stress(two_n[k], ea[k]), _life_on_stress(two_n[k], pa[k])
+            except ValueError:
+                continue
+            v = transition(e2["coef"], p2["coef"], e2["exp"], p2["exp"])
+            if math.isfinite(v) and v > 0:
+                draws.append(v)
+        if len(draws) >= 50:
+            lo_nt, hi_nt = (float(q) for q in np.percentile(draws, [2.5, 97.5]))
+    nt_note = "below 1 reversal means elastic strain dominates at every practical life"
+    if math.isfinite(lo_nt):
+        nt_note = f"95 % bootstrap interval {lo_nt:.3g}–{hi_nt:.3g}; " + nt_note
+
+    grid = np.logspace(np.log10(max(two_n.min() * 0.5, 1e-3)), np.log10(two_n.max() * 5.0), 240)
     metrics = [
-        Metric("σ'f / E", sigma_f_over_E, "-"),
+        Metric("σ'f / E", sigma_f_over_E, "-", f"± {el['se_coef']:.3g} (1 SE)", se=el["se_coef"]),
         *([Metric("Fatigue strength coefficient σ'f", sigma_f, "MPa",
                   f"σ'f/E × E, with E = {modulus:g} MPa")] if modulus else []),
-        Metric("Fatigue strength exponent b", b, "-"),
-        Metric("Fatigue ductility coefficient ε'f", eps_f, "-"),
-        Metric("Fatigue ductility exponent c", c, "-"),
-        Metric("Transition life 2Nt", two_nt, "reversals",
-               "below 1 reversal means elastic strain dominates at every practical life"),
-        Metric("Elastic branch R²", float(el.rvalue ** 2), "-"),
-        Metric("Plastic branch R²", float(pl.rvalue ** 2), "-"),
+        Metric("Fatigue strength exponent b", b, "-", f"± {el['se_exp']:.3g} (1 SE)", se=el["se_exp"]),
+        Metric("Fatigue ductility coefficient ε'f", eps_f, "-", f"± {pl['se_coef']:.3g} (1 SE)", se=pl["se_coef"]),
+        Metric("Fatigue ductility exponent c", c, "-", f"± {pl['se_exp']:.3g} (1 SE)", se=pl["se_exp"]),
+        Metric("Transition life 2Nt", two_nt, "reversals", nt_note),
+        Metric("Elastic branch R²", el["r2"], "-", "of log 2N on log amplitude"),
+        Metric("Plastic branch R²", pl["r2"], "-", "of log 2N on log amplitude"),
     ]
     curves = {
-        "elastic data": (n, ea), "plastic data": (n, pa),
-        "elastic fit": (grid, sigma_f_over_E * (2.0 * grid) ** b),
-        "plastic fit": (grid, eps_f * (2.0 * grid) ** c),
-        "total fit": (grid, sigma_f_over_E * (2.0 * grid) ** b + eps_f * (2.0 * grid) ** c),
+        "elastic data": (two_n, ea), "plastic data": (two_n, pa),
+        "elastic fit": (grid, sigma_f_over_E * grid ** b),
+        "plastic fit": (grid, eps_f * grid ** c),
+        "total fit": (grid, sigma_f_over_E * grid ** b + eps_f * grid ** c),
     }
     return AnalysisResult("strain_life", metrics, curves,
-                          {"b": b, "c": c, "eps_f": eps_f, "sigma_f_over_E": sigma_f_over_E})
+                          {"b": b, "c": c, "eps_f": eps_f, "sigma_f_over_E": sigma_f_over_E,
+                           "two_nt_interval": (lo_nt, hi_nt), "x_is_reversals": True})
 
 
 # ---------------------------------------------------------------------------
 # 4. TGA
 # ---------------------------------------------------------------------------
 def analyze_tga(temperature: Sequence[float], weight_pct: Sequence[float], *,
-                thresholds: Iterable[float] = (5.0, 10.0, 50.0, 65.0)) -> AnalysisResult:
-    """Decomposition temperatures, residue and DTG peaks."""
+                thresholds: Iterable[float] = (5.0, 10.0, 50.0, 65.0),
+                dry_basis_at: float | None = None) -> AnalysisResult:
+    """Decomposition temperatures, residue and DTG peaks.
+
+    Mass loss is relative to the first point, or — with `dry_basis_at` (°C) — to the
+    weight at that temperature, so moisture or solvent leaving an aerogel below it does
+    not count as decomposition. Repeated temperatures (isothermal holds, 0.1 °C
+    resolution) are averaged before differentiating.
+    """
     T, w = _clean_xy(temperature, weight_pct, sort=True, name="TGA")
-    w0 = float(w[0])
+    T, w = _merge_duplicate_x(T, w)
+    basis_note = "relative to the first point"
+    if dry_basis_at is not None and math.isfinite(float(dry_basis_at)):
+        w0 = float(np.interp(float(dry_basis_at), T, w))
+        basis_note = f"dry basis: relative to the weight at {float(dry_basis_at):g} °C"
+    else:
+        w0 = float(w[0])
     if w0 <= 0:
-        raise ValueError("TGA: first weight value must be positive")
+        raise ValueError("TGA: reference weight must be positive")
     loss = (w0 - w) / w0 * 100.0
+    if dry_basis_at is not None:
+        loss = np.where(T < float(dry_basis_at), np.nan, loss)
 
     metrics: list[Metric] = []
     for thr in thresholds:
         t_thr = _interp_crossing(T, loss, thr)
-        metrics.append(Metric(f"T at {thr:g} % loss", t_thr if t_thr is not None else float("nan"), "°C"))
+        metrics.append(Metric(f"T at {thr:g} % loss", t_thr if t_thr is not None else float("nan"), "°C",
+                              basis_note))
 
     dtg = -np.gradient(_smooth(w), T)
     dtg_s = _smooth(dtg)
@@ -404,11 +512,24 @@ def analyze_tga(temperature: Sequence[float], weight_pct: Sequence[float], *,
     for i, p in enumerate(peaks[:3], start=1):
         metrics.append(Metric(f"DTG peak {i}", float(T[p]), "°C", f"rate {dtg_s[p]:.3f} %/°C"))
     metrics.append(Metric("Residue at final temperature", float(w[-1]), "%", f"at {T[-1]:.0f} °C"))
-    metrics.append(Metric("Total mass loss", float(loss[-1]), "%"))
-    metrics.append(Metric("Onset temperature", _onset_temperature(T, w), "°C", "intersection of the two tangents"))
+    metrics.append(Metric("Total mass loss", float(loss[-1]), "%", basis_note))
+    metrics.append(Metric("Onset temperature", _onset_temperature(T, w), "°C",
+                          "steepest-descent tangent meets the initial plateau level (mean of the first 5 % of points)"))
 
     curves = {"TGA": (T, w), "DTG": (T, dtg_s), "mass loss": (T, loss)}
     return AnalysisResult("tga", metrics, curves, {"peaks": [float(T[p]) for p in peaks]})
+
+
+def _merge_duplicate_x(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Average y over repeated x (sorted input), so derivatives never divide by zero."""
+    ux, inv = np.unique(x, return_inverse=True)
+    if ux.size == x.size:
+        return x, y
+    sums = np.bincount(inv, weights=y)
+    counts = np.bincount(inv)
+    if ux.size < 3:
+        raise ValueError("fewer than 3 distinct x values")
+    return ux, sums / counts
 
 
 def _onset_temperature(T: np.ndarray, w: np.ndarray) -> float:
@@ -428,15 +549,27 @@ def _onset_temperature(T: np.ndarray, w: np.ndarray) -> float:
 # 5. DSC
 # ---------------------------------------------------------------------------
 def analyze_dsc(temperature: Sequence[float], heat_flow: Sequence[float], *,
-                heating_rate: float = 10.0, exo_up: bool = False,
+                heating_rate: float = 10.0, endotherm_up: bool = False,
+                exo_up: bool | None = None, sample_mass_mg: float | None = None,
                 peak_window: tuple[float, float] | None = None) -> AnalysisResult:
     """Peak temperatures, enthalpies (linear baseline) and a glass transition estimate.
 
-    heating_rate is in °C/min; heat_flow in W/g. Enthalpy = ∫ q dT / rate.
+    heating_rate is in °C/min; heat_flow in W/g (or in mW together with `sample_mass_mg`,
+    since mW/mg = W/g). Enthalpy = ∫ q dT / rate. The analyser expects endotherms to point
+    down (the "exo up" convention); set `endotherm_up` for instruments that plot them up.
+    `exo_up` is the old name of this switch: older versions flipped the signal when it was
+    ticked, so its value is kept with that meaning to reproduce saved sessions exactly.
     """
     T, q = _clean_xy(temperature, heat_flow, sort=True, name="DSC")
-    if exo_up:
+    T, q = _merge_duplicate_x(T, q)
+    if exo_up is not None:
+        endotherm_up = bool(exo_up)
+    if endotherm_up:
         q = -q
+    if sample_mass_mg:
+        if float(sample_mass_mg) <= 0:
+            raise ValueError("DSC: sample mass must be positive")
+        q = q / float(sample_mass_mg)
     rate_s = heating_rate / 60.0
     if rate_s <= 0:
         raise ValueError("DSC: heating rate must be positive")
@@ -477,11 +610,23 @@ def analyze_dsc(temperature: Sequence[float], heat_flow: Sequence[float], *,
     transitions.sort(key=lambda t: t["T"])
     tg = _glass_transition(T, qs, windows)
 
+    endos = [t for t in transitions if t["kind"] == "endotherm"]
+    exos = [t for t in transitions if t["kind"] == "exotherm"]
+    nan = float("nan")
+    if not endos:
+        peak_endo_T, dh_endo = nan, nan
+    total_endo = float(np.nansum([t["enthalpy"] for t in endos])) if endos else nan
+    if not exos:
+        peak_exo_T, dh_exo = nan, nan
     metrics = [
-        Metric("Endothermic peak (Tm)", peak_endo_T, "°C"),
-        Metric("Melting enthalpy ΔHm", dh_endo, "J/g", "linear baseline between the peak limits"),
-        Metric("Exothermic peak (Tc)", peak_exo_T, "°C"),
-        Metric("Crystallisation enthalpy ΔHc", dh_exo, "J/g"),
+        Metric("Endothermic peak (Tm)", peak_endo_T, "°C",
+               "deepest endotherm" if endos else "no endotherm detected"),
+        Metric("Melting enthalpy ΔHm", dh_endo, "J/g", "main (deepest) endotherm; linear baseline between the peak limits"),
+        Metric("Total endothermic enthalpy", total_endo, "J/g",
+               f"sum over {len(endos)} endotherm(s); hard-segment endotherms in TPU are not necessarily crystal melting"),
+        Metric("Exothermic peak", peak_exo_T, "°C",
+               "crystallisation (cooling) or cold crystallisation (heating)" if exos else "no exotherm detected"),
+        Metric("Exothermic enthalpy", dh_exo, "J/g"),
         Metric("Glass transition estimate", tg, "°C",
                "steepest baseline step away from the peaks - always confirm manually"),
         Metric("Heating rate", heating_rate, "°C/min"),
@@ -492,7 +637,7 @@ def analyze_dsc(temperature: Sequence[float], heat_flow: Sequence[float], *,
                               f"ΔH = {tr['enthalpy']:.2f} J/g over {tr['onset']:.1f}–{tr['end']:.1f} °C"))
     curves = {"DSC": (T, q), "smoothed": (T, qs)}
     return AnalysisResult("dsc", metrics, curves,
-                          {"exo_up": exo_up, "transitions": transitions})
+                          {"endotherm_up": endotherm_up, "transitions": transitions})
 
 
 def _significant_peaks(T: np.ndarray, y: np.ndarray, direction: int,
@@ -584,10 +729,17 @@ def _peak_limits(T: np.ndarray, q: np.ndarray, i_peak: int, direction: int,
     span = float(np.ptp(q))
     flat = shoulder_fraction * span / max(float(np.ptp(T)), 1e-12)
 
+    # Start the walk outside the peak's rounded tip: right at the extremum the slope is
+    # zero plus noise, and a noisy sign flip there would end the walk before it began.
+    depth = abs(float(q[i_peak]) - float(np.median(q)))
     left = i_peak
-    while left > 0 and direction * grad[left - 1] > -flat:
+    while left > 0 and abs(float(q[left]) - float(q[i_peak])) < 0.2 * depth:
         left -= 1
     right = i_peak
+    while right < n - 1 and abs(float(q[right]) - float(q[i_peak])) < 0.2 * depth:
+        right += 1
+    while left > 0 and direction * grad[left - 1] > -flat:
+        left -= 1
     while right < n - 1 and direction * grad[right + 1] < flat:
         right += 1
     if right - left < 2:
@@ -639,11 +791,55 @@ def _peak_enthalpy(T: np.ndarray, q: np.ndarray, i_peak: int, rate_s: float, dir
 # ---------------------------------------------------------------------------
 # 6. N2 sorption / BET
 # ---------------------------------------------------------------------------
+def _bet_fit(x: np.ndarray, v: np.ndarray) -> dict | None:
+    y = 1.0 / (v * (1.0 / x - 1.0))
+    fit = stats.linregress(x, y)
+    slope, intercept = float(fit.slope), float(fit.intercept)
+    if slope + intercept <= 0 or intercept <= 0:
+        return None
+    v_m = 1.0 / (slope + intercept)
+    c_const = 1.0 + slope / intercept
+    return {"slope": slope, "intercept": intercept, "v_m": v_m, "C": c_const,
+            "r2": float(fit.rvalue ** 2), "y": y, "se_slope": float(fit.stderr),
+            "se_intercept": float(fit.intercept_stderr)}
+
+
+def _rouquerol_problems(x: np.ndarray, v: np.ndarray, f: dict) -> list[str]:
+    """The consistency criteria of Rouquerol et al. for choosing a BET range."""
+    problems = []
+    if f["C"] <= 0:
+        problems.append("C ≤ 0")
+    if np.any(np.diff(v * (1.0 - x)) < 0):
+        problems.append("v(1 − p/p₀) does not increase over the range")
+    x_m = 1.0 / (math.sqrt(f["C"]) + 1.0) if f["C"] > 0 else float("nan")
+    if not (math.isfinite(x_m) and x.min() <= x_m <= x.max()):
+        problems.append("p/p₀ at monolayer completion lies outside the fitted range")
+    return problems
+
+
 def analyze_sorption_bet(p_p0: Sequence[float], volume_stp: Sequence[float], *,
                          bet_range: tuple[float, float] = (0.05, 0.30),
+                         auto_range: bool = False,
                          pore_volume_at: float = 0.99) -> AnalysisResult:
-    """Multipoint BET surface area, C constant, Gurvich pore volume and 4V/S pore size."""
-    x, v = _clean_xy(p_p0, volume_stp, sort=True, name="sorption")
+    """Multipoint BET surface area, C constant, Gurvich pore volume and 4V/S pore size.
+
+    Only the adsorption branch is used: if the file continues into desorption (pressure
+    falling after its maximum), those points are dropped. The fit is checked against the
+    Rouquerol consistency criteria; with `auto_range` the longest run of points inside
+    `bet_range` that satisfies them is chosen. A negative C is refused outright.
+    """
+    x_raw = np.asarray(p_p0, float).ravel()
+    v_raw = np.asarray(volume_stp, float).ravel()
+    branch_note = ""
+    if x_raw.size == v_raw.size and x_raw.size > 3:
+        ok = np.isfinite(x_raw) & np.isfinite(v_raw)
+        xr, vr = x_raw[ok], v_raw[ok]
+        i_top = int(np.argmax(xr))
+        if i_top < xr.size - 1 and np.any(np.diff(xr[i_top:]) < 0):
+            branch_note = f"desorption branch ({xr.size - i_top - 1} points) ignored"
+            xr, vr = xr[:i_top + 1], vr[:i_top + 1]
+        x_raw, v_raw = xr, vr
+    x, v = _clean_xy(x_raw, v_raw, sort=True, name="sorption")
     if np.any(x <= 0) or np.any(x >= 1):
         raise ValueError("sorption: relative pressure must be between 0 and 1")
     lo, hi = bet_range
@@ -651,33 +847,70 @@ def analyze_sorption_bet(p_p0: Sequence[float], volume_stp: Sequence[float], *,
     if mask.sum() < 3:
         raise ValueError(f"sorption: only {int(mask.sum())} points inside the BET range {lo}-{hi}")
 
-    y = 1.0 / (v * (1.0 / x - 1.0))
-    fit = stats.linregress(x[mask], y[mask])
-    slope, intercept = float(fit.slope), float(fit.intercept)
-    if slope + intercept <= 0:
-        raise ValueError("sorption: BET fit is not physical (slope + intercept <= 0)")
-    v_m = 1.0 / (slope + intercept)
-    c_const = 1.0 + slope / intercept if intercept else float("inf")
+    idx = np.flatnonzero(mask)
+    chosen = None
+    if auto_range:
+        best = None
+        for i in range(idx.size):
+            for j in range(i + 3, idx.size + 1):
+                sel = idx[i:j]
+                f = _bet_fit(x[sel], v[sel])
+                if f is None or _rouquerol_problems(x[sel], v[sel], f):
+                    continue
+                key = (sel.size, f["r2"])
+                if best is None or key > best[0]:
+                    best = (key, sel, f)
+        if best is not None:
+            chosen = best[1], best[2]
+    if chosen is None:
+        f = _bet_fit(x[mask], v[mask])
+        if f is None:
+            raise ValueError("sorption: BET fit is not physical in this range (C ≤ 0 or negative "
+                             "intercept) — the isotherm may be Type I/microporous or the range is wrong")
+        chosen = idx, f
+    sel, f = chosen
+    problems = _rouquerol_problems(x[sel], v[sel], f)
+    v_m, c_const = f["v_m"], f["C"]
     surface = v_m * AVOGADRO * N2_CROSS_SECTION / MOLAR_VOLUME_STP        # m^2/g
+    se_vm = v_m ** 2 * math.sqrt(f["se_slope"] ** 2 + f["se_intercept"] ** 2)   # ignores their covariance
+    se_surface = se_vm * AVOGADRO * N2_CROSS_SECTION / MOLAR_VOLUME_STP
+    x_lo, x_hi = float(x[sel].min()), float(x[sel].max())
 
-    i_close = int(np.argmin(np.abs(x - pore_volume_at)))
-    v_pore = float(v[i_close] * N2_LIQUID_FACTOR)
-    d_pore = 4.0 * v_pore * 1e-6 / surface * 1e9 if surface > 0 else float("nan")
+    pv_note = f"Gurvich rule at p/p₀ = {pore_volume_at:g}"
+    if x.max() < pore_volume_at - 0.005:
+        v_pore = float("nan")
+        pv_note = f"isotherm ends at p/p₀ = {x.max():.3f}, below the Gurvich point {pore_volume_at:g}"
+    else:
+        v_pore = float(np.interp(pore_volume_at, x, v) * N2_LIQUID_FACTOR)
+    d_pore = 4.0 * v_pore * 1e-6 / surface * 1e9 if surface > 0 and math.isfinite(v_pore) else float("nan")
+    d_note = "4V/S, cylindrical pores"
+    if math.isfinite(d_pore) and d_pore > 50:
+        d_note += "; above ~50 nm N₂ sorption does not capture the pores fully — treat as a lower bound"
 
+    fit_note = f"fit over p/p₀ = {x_lo:.3f}–{x_hi:.3f} ({sel.size} points), R² = {f['r2']:.4f}"
+    if auto_range:
+        fit_note += "; range chosen by the Rouquerol criteria" if not problems else "; no range met all criteria"
+    if problems:
+        fit_note += "; ⚠ " + "; ".join(problems)
+    if branch_note:
+        fit_note += f"; {branch_note}"
     metrics = [
-        Metric("BET surface area", float(surface), "m^2/g", f"fit over p/p₀ = {lo}–{hi}, R² = {fit.rvalue ** 2:.4f}"),
-        Metric("Monolayer volume Vm", float(v_m), "cm^3/g", "STP"),
-        Metric("BET C constant", float(c_const), "-", "negative or tiny C means the fit range is wrong"),
-        Metric("Total pore volume", v_pore, "cm^3/g", f"Gurvich rule at p/p₀ ≈ {x[i_close]:.3f}"),
-        Metric("Mean pore diameter", float(d_pore), "nm", "4V/S, cylindrical pores"),
-        Metric("BET fit R²", float(fit.rvalue ** 2), "-"),
+        Metric("BET surface area", float(surface), "m^2/g", fit_note + f"; ± {se_surface:.3g} (1 SE, fit only)",
+               se=se_surface),
+        Metric("Monolayer volume Vm", float(v_m), "cm^3/g", "STP", se=se_vm),
+        Metric("BET C constant", float(c_const), "-", "a C below ~2 or above ~1000 suggests the wrong range"),
+        Metric("Total pore volume", v_pore, "cm^3/g", pv_note),
+        Metric("Mean pore diameter", float(d_pore), "nm", d_note),
+        Metric("BET fit R²", float(f["r2"]), "-"),
     ]
     curves = {
         "isotherm": (x, v),
-        "BET plot": (x[mask], y[mask]),
-        "BET fit": (x[mask], intercept + slope * x[mask]),
+        "BET plot": (x[sel], f["y"]),
+        "BET fit": (x[sel], f["intercept"] + f["slope"] * x[sel]),
     }
-    return AnalysisResult("sorption", metrics, curves, {"slope": slope, "intercept": intercept})
+    return AnalysisResult("sorption", metrics, curves,
+                          {"slope": f["slope"], "intercept": f["intercept"], "range": (x_lo, x_hi),
+                           "criteria_problems": problems})
 
 
 # ---------------------------------------------------------------------------
@@ -695,7 +928,9 @@ def fit_herschel_bulkley(shear_rate: Sequence[float], shear_stress: Sequence[flo
     tau_y0 = max(float(np.min(t)) * 0.8, 0.0)
     k0 = max((float(np.max(t)) - tau_y0) / max(float(np.max(g)) ** 0.5, 1e-9), 1e-6)
     try:
-        popt, pcov = optimize.curve_fit(model, g, t, p0=[tau_y0, k0, 0.5],
+        # Relative weighting: flow curves span decades and the error is roughly proportional
+        # to the stress, so an unweighted fit lets the highest rates dominate τy.
+        popt, pcov = optimize.curve_fit(model, g, t, p0=[tau_y0, k0, 0.5], sigma=np.maximum(np.abs(t), 1e-12),
                                         bounds=([0.0, 1e-12, 1e-3], [np.inf, np.inf, 3.0]), maxfev=20000)
         perr = np.sqrt(np.diag(pcov))
     except Exception as exc:  # noqa: BLE001
@@ -706,10 +941,12 @@ def fit_herschel_bulkley(shear_rate: Sequence[float], shear_stress: Sequence[flo
     grid = np.linspace(max(g.min(), 1e-6), g.max(), 200)
 
     metrics = [
-        Metric("Yield stress τy", tau_y, "Pa", f"± {perr[0]:.3g}"),
-        Metric("Consistency index K", k, "Pa·sⁿ", f"± {perr[1]:.3g}"),
-        Metric("Flow index n", n, "-", "n < 1 is shear-thinning"),
+        Metric("Yield stress τy", tau_y, "Pa", f"± {perr[0]:.3g} (1 SE, relative weighting)", se=float(perr[0])),
+        Metric("Consistency index K", k, "Pa·sⁿ", f"± {perr[1]:.3g} (1 SE)", se=float(perr[1])),
+        Metric("Flow index n", n, "-", f"± {perr[2]:.3g} (1 SE); n < 1 is shear-thinning", se=float(perr[2])),
         Metric("R²", _r2(t, pred), "-"),
+        Metric("R² (log stress)", _r2(np.log10(np.maximum(t, 1e-300)), np.log10(np.maximum(pred, 1e-300))), "-",
+               "judges the fit evenly across decades of shear rate"),
         Metric("Apparent viscosity at 1 s⁻¹", float(model(1.0, *popt)), "Pa·s"),
     ]
     curves = {"flow curve": (g, t), "HB fit": (grid, model(grid, *popt))}
@@ -742,7 +979,7 @@ def find_moduli_crossover(x: Sequence[float], g_storage: Sequence[float],
     metrics = [
         Metric("Flow point (G′ = G″)", crossover, x_unit, f"{x_label} at the crossover"),
         Metric("Modulus at crossover", g_at_cross, "Pa"),
-        Metric("Plateau G′", plateau, "Pa", "median of the first 20 % of points"),
+        Metric("Plateau G′", plateau, "Pa", "median of the first 20 % of points (not a detected linear viscoelastic region)"),
         Metric("tan δ at first point", float(gpp[0] / gp[0]), "-"),
         Metric("Solid-like", 1.0 if gp[0] > gpp[0] else 0.0, "-", "1 = G′ > G″ at low amplitude"),
     ]
@@ -793,22 +1030,27 @@ def fit_power_law_scaling(density: Sequence[float], modulus: Sequence[float], *,
     x = np.log(rho / rho_solid) if rho_solid else np.log(rho)
     fit = stats.linregress(x, np.log(e))
     n = float(fit.slope)
-    ci = 1.96 * float(fit.stderr)
+    dof = rho.size - 2
+    t = float(stats.t.ppf(0.975, dof)) if dof > 0 else float("nan")
+    ci = t * float(fit.stderr) if dof > 0 else float("nan")
     span = float(rho.max() / rho.min())
     grid = np.linspace(rho.min(), rho.max(), 120)
     prefactor = float(np.exp(fit.intercept))
     pred_grid = prefactor * ((grid / rho_solid) ** n if rho_solid else grid ** n)
 
-    note = "well constrained"
+    notes = []
     if span < 1.5:
-        note = f"density spans only {span:.2f}× — the exponent is weakly identified"
+        notes.append(f"density spans only {span:.2f}× — the exponent is weakly identified")
+    if rho.size < 5:
+        notes.append(f"only {rho.size} samples")
+    note = "; ".join(notes) or f"{rho.size} samples over a {span:.2f}× density range"
+    ci_txt = f"95 % CI ± {ci:.3f} (t, {dof} d.o.f.)" if dof > 0 else "no CI with 2 points"
     metrics = [
-        Metric("Scaling exponent n", n, "-", f"95 % CI ± {ci:.3f}; {note}"),
+        Metric("Scaling exponent n", n, "-", f"{ci_txt}; {note}; for reference, open-cell foams ≈ 2 "
+               "(Gibson–Ashby), silica aerogels typically 3–4", se=float(fit.stderr)),
         Metric("Prefactor", prefactor, "MPa"),
         Metric("R²", float(fit.rvalue ** 2), "-"),
         Metric("Density span", span, "×", "max/min density in the fit"),
-        Metric("Gibson–Ashby reference", 2.0, "-", "open-cell foams"),
-        Metric("Silica aerogel reference", 3.5, "-", "typical 3–4"),
     ]
     curves = {"data": (rho, e), "fit": (grid, pred_grid)}
     return AnalysisResult("power_law", metrics, curves, {"n": n, "ci": ci, "span": span})
