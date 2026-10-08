@@ -134,7 +134,10 @@ class AboutPage(Page):
             ("Equations", str(len(E.REGISTRY))),
             ("Measurements", str(len(M.MEASUREMENTS))),
             ("Graphs defined", str(sum(len(m.plots) for m in M.MEASUREMENTS))),
-            ("Paper values reproduced", f"{summary['reproduced']}/{summary['total']}"),
+            ("Printed paper values reproduced",
+             f"{summary['reproduced_printed']}/{summary['printed_total']}"),
+            ("Other reference checks passed",
+             f"{summary['reproduced'] - summary['reproduced_printed']}"),
         ]
         for i, (label, value) in enumerate(tiles):
             grid.addWidget(MetricTile(label, value), 0, i)

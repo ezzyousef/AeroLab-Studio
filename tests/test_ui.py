@@ -343,3 +343,15 @@ def test_calculator_converts_a_temperature_uncertainty(qapp):
     value, sigma = (float(t.split()[0]) for t in text.split("±"))
     assert abs(sigma / value - 5 / 298.15) < 0.02
     window.close()
+
+
+def test_plot_merge_keeps_every_series(analysed):
+    from types import SimpleNamespace
+    from aerolab.core import measurements as M
+    from aerolab.ui.pages.plots import _merge
+
+    m = M.get("strain_life")
+    run = SimpleNamespace(sample="S1", result=analysed["strain_life"])
+    merged, _roles = _merge([run, run], m.plots[0], show_fits=False)
+    # two data series per run, two runs with the same name: four distinct curves
+    assert len(merged) == 4

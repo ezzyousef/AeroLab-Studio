@@ -206,18 +206,29 @@ def _merge(runs, template: Plot, show_fits: bool):
     """Gather the curves of several runs under names that identify their sample."""
     merged: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     roles: dict[str, str] = {}
-    wanted = [(s.curve, s.role) for s in template.series]
+    wanted = [(s.curve, s.role, s.label) for s in template.series]
+    # Several series of one role (elastic and plastic data on the strain-life plot) need
+    # their own names, or the second would overwrite the first under the sample's name.
+    per_role = {r: sum(1 for _c, rr, _l in wanted if rr == r) for _c, r, _l in wanted}
+    seen: dict[str, int] = {}
     for run in runs:
-        for curve_key, role in wanted:
+        # Two runs may share a sample name (re-analysed, or two files called the same).
+        n = seen.get(run.sample, 0)
+        seen[run.sample] = n + 1
+        sample = run.sample if n == 0 else f"{run.sample} ({n + 1})"
+        for curve_key, role, series_label in wanted:
             if role == "fit" and not show_fits:
                 continue
             keys = list(run.result.curves) if curve_key == "*" else [curve_key]
             for key in keys:
                 if key not in run.result.curves:
                     continue
-                label = run.sample if len(keys) == 1 else f"{run.sample} · {key}"
-                if role == "fit":
-                    label = f"{label} fit"
+                if len(keys) > 1:
+                    label = f"{sample} · {key}"
+                elif per_role[role] > 1:
+                    label = f"{sample} · {series_label}"
+                else:
+                    label = f"{sample} fit" if role == "fit" else sample
                 merged[label] = run.result.curves[key]
                 roles[label] = role
     return merged, roles

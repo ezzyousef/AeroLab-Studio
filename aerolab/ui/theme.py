@@ -100,6 +100,7 @@ QPushButton#NavButton:checked {{
     background: {c['raised']}; border: 1px solid {c['border']};
     border-radius: 10px;
 }}
+#TileValue, #TileLabel, #TileUnit {{ background: transparent; }}
 #TileValue {{ font-size: 21px; font-weight: 700; color: {c['fg']}; }}
 #TileLabel {{ font-size: 11px; color: {c['muted']}; font-weight: 600; letter-spacing: .4px; }}
 #TileUnit {{ font-size: 12px; color: {c['muted']}; }}

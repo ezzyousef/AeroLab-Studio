@@ -19,12 +19,12 @@ Built from:
 
 | | |
 |---|---|
-| **59 equations** | Every relation in the three papers, with unit conversion on every input and uncertainty propagation by central differences. |
+| **59 equations** | The relations used in the three papers, with unit conversion on every input and first-order uncertainty propagation (independent inputs). |
 | **11 measurements** | Stress–strain, cyclic loading, S–N, strain–life, density scaling, TGA, DSC, thermal properties, BET, Herschel–Bulkley, amplitude sweep. |
-| **Automatic import** | CSV, TSV, TXT, DAT, Excel, JSON, NumPy archives. Instrument preambles, unit rows, European decimals and multi-sheet workbooks are all handled; columns are matched to the measurement by name. |
+| **Automatic import** | CSV, TSV, TXT, DAT, Excel (.xlsx), JSON, NumPy archives. Instrument preambles, unit rows, European decimals and multi-sheet workbooks are handled; columns are matched to the measurement by name and converted to the unit the analysis needs. Columns that had to be guessed are flagged. |
 | **Origin export** | Styled workbooks (Long Name / Units / Comments) and graphs with publication colours and symbols, saved as a `.opju` project with PNG exports. No Origin on the machine? It writes a LabTalk package that rebuilds the same project elsewhere. |
 | **Excel export** | Summary, one sheet per dataset with its curves, native Excel charts, the validation table, and a provenance sheet recording versions, files and settings. |
-| **Self-validation** | 26 cases recompute numbers printed in the papers. Two are recorded as disagreements *with the papers*, with the reasoning stated, rather than quietly fudged. |
+| **Self-validation** | 26 reference cases: 17 recompute numbers printed in the papers, 7 are physics or recomputation checks, and 2 record disagreements *with the papers*, with the reasoning stated. Each case says which kind it is. These check the equation library, not the curve analysers — those are covered by the test suite on synthetic data. |
 
 ---
 
@@ -58,7 +58,10 @@ the app drives it directly; without, it writes a script package instead.
    Measurements. Change a setting and re-run — it is free to try, and `Ctrl+Z` undoes it.
 4. **Plots** overlays several runs on one pair of axes.
 5. **Export** writes the Excel workbook, or sends everything to Origin.
-6. **Validation** shows the equation library recomputing the papers' own numbers.
+6. **Validation** shows the equation library recomputing the papers' own numbers, and
+   says for each case whether the reference is a printed value or a cross-check.
+
+See `docs/REVIEW_LOG.md` for the independent review of this version and what changed.
 
 `Ctrl+K` opens a command palette with every action in the app.
 
@@ -73,7 +76,7 @@ aerolab/
     equations.py      59 equations, each with inputs, units and a reference
     curves.py         the analysers: fits, peaks, integrals
     measurements.py   what each experiment needs, and what it plots
-    validation.py     26 cases recomputing published values
+    validation.py     26 reference cases (printed values, physics checks, discrepancies)
   io/
     readers.py        delimiter sniffing, unit rows, Excel, JSON, NPZ
     excel.py          the formatted workbook with native charts

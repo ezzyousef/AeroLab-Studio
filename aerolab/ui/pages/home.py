@@ -46,8 +46,8 @@ class HomePage(Page):
         summary = V.summary()
         lib_grid.addWidget(MetricTile("Equations", str(len(E.REGISTRY))), 0, 0)
         lib_grid.addWidget(MetricTile("Measurements", str(len(M.MEASUREMENTS))), 0, 1)
-        lib_grid.addWidget(MetricTile("Paper values reproduced",
-                                      f"{summary['reproduced']}/{summary['total']}"), 0, 2)
+        lib_grid.addWidget(MetricTile("Printed paper values reproduced",
+                                      f"{summary['reproduced_printed']}/{summary['printed_total']}"), 0, 2)
         lib_grid.addWidget(MetricTile("Origin graphs defined",
                                       str(sum(len(m.plots) for m in M.MEASUREMENTS))), 0, 3)
         library.body.addLayout(lib_grid)

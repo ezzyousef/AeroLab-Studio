@@ -172,13 +172,25 @@ class MeasurePage(Page):
             self.btn_rerun.setEnabled(False)
             self._option_editor = None
             return
+        self.settings_hint.setObjectName("Hint")
+        self.settings_hint.style().unpolish(self.settings_hint)
+        self.settings_hint.style().polish(self.settings_hint)
         self.settings_hint.setText(
             "Change a setting and re-run — the original data is kept, so this is free to try.")
         self.btn_rerun.setEnabled(run.measurement.kind != "table")
         self._option_editor = OptionEditor(
             run.measurement.options,
             values=M.upgrade_options(run.measurement.id, {**run.measurement.defaults(), **run.options}))
+        self._option_editor.changed.connect(self._settings_edited)
         self.options_slot.addWidget(self._option_editor)
+
+    def _settings_edited(self) -> None:
+        # Until Re-run is pressed the numbers on screen belong to the old settings.
+        self.settings_hint.setText("Settings changed — the results shown still use the previous "
+                                   "settings. Press Re-run to update them.")
+        self.settings_hint.setObjectName("PillWarn")
+        self.settings_hint.style().unpolish(self.settings_hint)
+        self.settings_hint.style().polish(self.settings_hint)
 
     def _draw(self) -> None:
         run = self.current_run()

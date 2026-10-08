@@ -212,8 +212,12 @@ class Toast(QFrame):
         layout.addWidget(icon_label(glyph, 12))
         text = QLabel(message)
         text.setObjectName("ToastText")
-        text.setWordWrap(True)
+        # Short messages stay on one line: a wrapped label inside the corner stack gets
+        # squeezed to a sliver and clips its own text.
+        text.setWordWrap(len(message) > 60)
         text.setMaximumWidth(420)
+        if len(message) > 60:
+            text.setMinimumWidth(320)
         layout.addWidget(text, 1)
 
         shadow = QGraphicsDropShadowEffect(self)
@@ -274,7 +278,8 @@ class ToastHost(QWidget):
         try:
             self.adjustSize()
             width = max(self.sizeHint().width(), 320)
-            height = max(self.sizeHint().height(), 1)
+            # Wrapped toast text is taller at the final width than sizeHint() assumes.
+            height = max(self.sizeHint().height(), self.heightForWidth(width), 1)
             target = (parent.width() - width - 26, parent.height() - height - 46, width, height)
             if (self.x(), self.y(), self.width(), self.height()) != target:
                 self.setGeometry(*target)

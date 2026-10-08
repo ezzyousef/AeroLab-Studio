@@ -114,10 +114,13 @@ class DataPage(Page):
         self.map_table = QTableWidget(0, 3)
         self.map_table.setHorizontalHeaderLabels(["Needs", "Column in file", "Unit"])
         self.map_table.verticalHeader().setVisible(False)
+        self.map_table.verticalHeader().setDefaultSectionSize(36)   # room for the combo boxes
         self.map_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.map_table.horizontalHeader().setStretchLastSection(True)
-        self.map_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.map_table.setMaximumHeight(150)
+        header = self.map_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)       # the column picker needs room
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.map_table.setMinimumHeight(130)
         self.mapping_card.body.addWidget(self.map_table)
 
         run_row = QHBoxLayout()

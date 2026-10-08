@@ -54,9 +54,15 @@ class ManualCalc:
     reference: str = ""
     uncertainty: float | None = None
     created: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
+    input_uncertainties: dict[str, float] = field(default_factory=dict)
 
     def input_text(self) -> str:
-        return ", ".join(f"{k}={_fmt(v)}" for k, v in self.inputs.items())
+        def one(k, v):
+            s = f"{k}={_fmt(v)}"
+            if k in self.input_uncertainties:
+                s += f" ± {_fmt(self.input_uncertainties[k])}"
+            return s
+        return ", ".join(one(k, v) for k, v in self.inputs.items())
 
 
 @dataclass(frozen=True)
@@ -327,6 +333,8 @@ class Session(QObject):
             "manual": [
                 {"equation": c.equation_id, "name": c.name, "unit": c.unit,
                  "value": _jsonable(c.value), "inputs": {k: _jsonable(v) for k, v in c.inputs.items()},
+                 "uncertainty": _jsonable(c.uncertainty),
+                 "input_uncertainties": {k: _jsonable(v) for k, v in c.input_uncertainties.items()},
                  "reference": c.reference}
                 for c in self.manual
             ],
@@ -367,10 +375,16 @@ class Session(QObject):
             loaded += 1
 
         for entry in payload.get("manual", []):
+            sigma = entry.get("uncertainty")
             self.manual.append(ManualCalc(
                 entry.get("equation", ""), entry.get("name", ""),
-                {k: _float(v) for k, v in entry.get("inputs", {}).items()},
-                _float(entry.get("value")), entry.get("unit", ""), entry.get("reference", "")))
+                # list-valued inputs (a series of thicknesses, say) stay lists
+                {k: ([_float(x) for x in v] if isinstance(v, list) else _float(v))
+                 for k, v in entry.get("inputs", {}).items()},
+                _float(entry.get("value")), entry.get("unit", ""), entry.get("reference", ""),
+                uncertainty=None if sigma is None else _float(sigma),
+                input_uncertainties={k: _float(v) for k, v in
+                                     entry.get("input_uncertainties", {}).items()}))
         self._record(f"open session “{p.stem}”")
         self.manual_changed.emit()
 

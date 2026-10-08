@@ -249,11 +249,19 @@ class ExportPage(Page):
             validation=V.run_all() if self.chk_validation.isChecked() else [],
             theme=self.session.theme,
             manual=[{"name": c.name, "inputs": c.input_text(), "value": c.value,
-                     "unit": c.unit, "reference": c.reference} for c in self.session.manual],
+                     "unit": c.unit, "reference": c.reference, "uncertainty": c.uncertainty}
+                    for c in self.session.manual],
         )
         for run in runs:
+            dataset = next((d for d in self.session.datasets if d.name == run.dataset_name), None)
+            mapping = {}
+            for ch in run.measurement.channels:
+                idx = run.mapping.get(ch.key)
+                if idx is not None:
+                    mapping[ch.label] = (dataset.label(idx) if dataset is not None
+                                         and idx < dataset.n_cols else f"column {idx + 1}")
             report.add(X.RunRecord(run.sample, run.measurement, run.result,
-                                   source=run.source, options=run.options))
+                                   source=run.source, options=run.options, mapping=mapping))
         try:
             written = X.write_workbook(report, path)
         except Exception as exc:                                # noqa: BLE001

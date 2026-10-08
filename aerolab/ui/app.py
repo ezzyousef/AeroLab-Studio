@@ -37,7 +37,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.session = session or Session()
         self.setWindowTitle("AeroLab Studio")
-        self.setMinimumSize(1120, 720)
+        # Small enough for a 1366x768 laptop at 125 % scaling; pages scroll below this.
+        self.setMinimumSize(960, 600)
         self.resize(1440, 900)
         self.setWindowIcon(_app_icon())
 

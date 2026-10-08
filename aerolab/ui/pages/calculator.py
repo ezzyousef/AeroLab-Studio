@@ -112,7 +112,7 @@ class CalculatorPage(Page):
         rl.addWidget(self.detail, 3)
 
         kept = Card("Kept results", "These are written to the Calculations sheet on export.")
-        self.kept_table = ResultTable(["Equation", "Inputs", "Value", "Unit"])
+        self.kept_table = ResultTable(["Equation", "Inputs", "Value", "± (1σ)", "Unit"])
         self.kept_table.setMaximumHeight(170)
         kept.body.addWidget(self.kept_table)
         rl.addWidget(kept, 1)
@@ -285,7 +285,7 @@ class CalculatorPage(Page):
         elif shown_sigma is not None:
             text += "  ± (uncertainty unavailable at this point)"
         self._set_result(text, equation.notes)
-        self._last = (value, equation.output.unit, dict(values))
+        self._last = (value, equation.output.unit, dict(values), sigma, dict(sigmas))
 
     def _set_result(self, text: str | None, note: str = "") -> None:
         self.result_label.setText(text if text else "—")
@@ -296,13 +296,15 @@ class CalculatorPage(Page):
         equation = self._equation
         if equation is None or not getattr(self, "_last", None):
             return
-        value, unit, inputs = self._last
+        value, unit, inputs, sigma, sigmas = self._last
         self.session.add_manual(ManualCalc(equation.id, equation.name, inputs, value, unit,
-                                           equation.reference))
+                                           equation.reference, uncertainty=sigma,
+                                           input_uncertainties=sigmas))
         self.session.status.emit(f"Kept {equation.name}", "success")
 
     def _refresh_kept(self) -> None:
-        self.kept_table.fill([(c.name, c.input_text(), c.value, c.unit)
+        self.kept_table.fill([(c.name, c.input_text(), c.value,
+                               "—" if c.uncertainty is None else c.uncertainty, c.unit)
                               for c in self.session.manual])
 
 

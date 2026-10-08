@@ -47,6 +47,7 @@ class OriginExportItem:
     measurement: Measurement
     result: AnalysisResult
     source: str = ""
+    uid: str = ""                 # set by _assign_ids so two items never share a file name
 
     @property
     def book_name(self) -> str:
@@ -54,7 +55,21 @@ class OriginExportItem:
 
     @property
     def safe_id(self) -> str:
-        return _SAFE_NAME.sub("_", f"{self.sample}_{self.measurement.id}").strip("_")[:28]
+        return self.uid or _SAFE_NAME.sub("_", f"{self.sample}_{self.measurement.id}").strip("_")[:28]
+
+
+def _assign_ids(items: Sequence[OriginExportItem]) -> None:
+    """Unique ASCII ids. Without this, two runs of one sample (or two long names that
+    agree in their first 28 characters) overwrite each other's CSV, book and images."""
+    used: set[str] = set()
+    for item in items:
+        base = _SAFE_NAME.sub("_", f"{item.sample}_{item.measurement.id}").strip("_")[:20] or "item"
+        uid, n = base, 2
+        while uid.lower() in used:
+            uid = f"{base}_{n}"
+            n += 1
+        used.add(uid.lower())
+        item.uid = uid
 
 
 @dataclass
@@ -350,6 +365,7 @@ def write_script_package(items: Sequence[OriginExportItem], folder: str | Path, 
         "",
     ]
     graphs = 0
+    _assign_ids(items)
     for item in items:
         csv_path = out / "data" / f"{item.safe_id}.csv"
         _write_origin_csv(item, csv_path)
@@ -542,6 +558,7 @@ def export_to_origin(items: Sequence[OriginExportItem], destination: str | Path,
     """
     dest = Path(destination)
     dest.mkdir(parents=True, exist_ok=True)
+    _assign_ids(items)
     if not items:
         return OriginResult(mode="script", folder=dest, messages=["Nothing to export."])
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
 from ..state import Session
 
@@ -52,9 +52,18 @@ class Page(QWidget):
         head.addLayout(self.actions)
         root.addLayout(head)
 
-        self.content = QVBoxLayout()
+        # The content scrolls when the window is shorter (or narrower) than the page needs,
+        # instead of squashing cards until their controls overlap.
+        host = QWidget()
+        self.content = QVBoxLayout(host)
+        self.content.setContentsMargins(0, 0, 0, 0)
         self.content.setSpacing(14)
-        root.addLayout(self.content, 1)
+        area = QScrollArea()
+        area.setObjectName("PageScroll")
+        area.setWidgetResizable(True)
+        area.setFrameShape(QFrame.NoFrame)
+        area.setWidget(host)
+        root.addWidget(area, 1)
 
     def set_subtitle(self, text: str) -> None:
         if self._subtitle is not None:

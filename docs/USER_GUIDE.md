@@ -35,19 +35,23 @@ Real instrument exports are messy, and the importer expects that:
 | Semicolons, tabs or runs of spaces as separators | Sniffed |
 | A multi-sheet workbook | One dataset per sheet that holds numbers |
 | A text column such as a sample name | Kept as labels, not forced to NaN |
+| A column in kPa, K, °F, mm/mm, reversals … | Converted to the unit the measurement needs; noted in the status bar and the Excel provenance |
+| A column of the wrong kind (force in N mapped to stress) | Refused with a message — map the right column or convert it first |
+| An old binary `.xls` workbook | Refused with a message: save it as `.xlsx` or `.csv` |
 
 ### Check before you commit
 
 Selecting a dataset shows a preview, and beneath it the measurement the app guessed and
 the column mapping it intends to use. The pill on the right says whether every required
 column was matched. **Nothing is analysed until you press a button**, and every guess is a
-dropdown you can change.
+dropdown you can change. A column that no header named — filled in only because it was the
+next unused one — is marked *guessed from column order, check*, and the pill turns amber.
 
 ### Analyse
 
 - **Analyse this dataset** runs the measurement shown.
-- **Analyse all imported** guesses for every dataset and runs the ones it is confident
-  about, reporting how many succeeded.
+- **Analyse all imported** guesses for every dataset and runs only those whose measurement
+  and columns are clearly named; the rest are listed for you to map by hand.
 
 ---
 
@@ -59,9 +63,30 @@ One row per analysed dataset. Three tabs:
   how it was obtained ("linear baseline between the peak limits").
 - **Graph** — the graphs that measurement defines, with a results box placed wherever the
   data leaves room. **Save image…** writes PNG, PDF, SVG or TIFF.
-- **Settings** — the analyser's knobs. Change the BET window, the DSC heating rate, the
-  offset-yield strain, then **Re-run with these settings**. The original data is untouched
-  and `Ctrl+Z` puts the previous result back.
+- **Settings** — the analyser's knobs, showing the values the run actually used. Change the
+  BET window, the DSC heating rate, the offset-yield strain, then **Re-run with these
+  settings**. Until you re-run, an amber note says the results still use the old settings.
+  The original data is untouched and `Ctrl+Z` puts the previous result back.
+
+### Notes on the analyses
+
+- **Stress–strain.** The modulus window is the most linear stretch among the steepest
+  ones, and must span at least 0.5 % strain. Elongation at break is the last point before
+  stress drops below 10 % of the UTS. Set the offset-yield strain to 0 for elastomers and
+  foams, where a 0.2 % offset yield has no meaning.
+- **S–N and strain–life.** Following ASTM E739, log life is regressed on log stress (or
+  strain), because the scatter is in life; the fit is then inverted to the usual Basquin /
+  Coffin–Manson form. Exponents carry standard errors and 95 % intervals; the transition
+  life has a bootstrap interval. Graphs are plotted against reversals 2N.
+- **DSC.** By default endotherms point down (exo up). Tick *Endotherms point up* if your
+  instrument exports exo down. For data in mW, enter the sample mass. A transition that
+  cannot be found is reported as NaN, not 0.
+- **BET.** Only the adsorption branch is used. The fit is checked against the Rouquerol
+  criteria and the problems are listed in the note; *Choose BET range automatically* picks
+  the widest window that passes. A negative C (typical of microporous, Type I isotherms)
+  is refused rather than reported.
+- **TGA.** *Dry basis at* renormalises the mass at a chosen temperature so that adsorbed
+  water is not counted as decomposition.
 
 ### What each measurement reports
 
@@ -89,8 +114,11 @@ for each variable.
 - **Units.** Each input has its own unit selector. Type 211 kg/m³ where the equation wants
   g/cm³ and the conversion happens on the way in. The result has a unit selector too.
 - **Uncertainty.** The narrow `±` box beside an input is optional. Fill in one or more and
-  the result carries a propagated uncertainty, computed by central differences — no
-  assumption that the equation is linear.
+  the result carries a propagated uncertainty: first-order (linearised) propagation with
+  numerical derivatives, treating the inputs as independent. It is reliable when σ is small
+  enough that the equation is close to linear over ±σ; for large σ or correlated inputs it
+  is only an estimate. Where the derivative cannot be evaluated the result says so instead
+  of showing ± 0. Uncertainties are kept with **Keep result** and exported.
 - **Lists.** A couple of equations (the rule of mixtures) take several values; type them
   comma-separated.
 - **Keep result** adds the evaluation to the session so it reaches the Excel export.

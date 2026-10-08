@@ -314,3 +314,22 @@ def test_workbook_with_a_chartsheet_still_imports(tmp_path):
     wb.save(path)
     datasets = R.read_any(path)
     assert len(datasets) == 1 and datasets[0].n_rows == 5
+
+
+def test_long_curves_are_charted_whole_and_ids_are_unique(tmp_path, analysed):
+    import numpy as np
+    from aerolab.core.curves import AnalysisResult
+    m = M.get("stress_strain")
+    x = np.linspace(0, 100, 5000)
+    res = AnalysisResult("stress_strain", [], {"stress-strain": (x, x * 0.01)}, {})
+    report = X.ExcelReport(project="t", include_curves=True, include_charts=True)
+    report.add(X.RunRecord("A", m, res))
+    X.write_workbook(report, tmp_path / "t.xlsx")
+    openpyxl = pytest.importorskip("openpyxl")
+    book = openpyxl.load_workbook(tmp_path / "t.xlsx", read_only=True)
+    headers = [str(c) for ws in book.worksheets for row in ws.iter_rows(max_row=8, values_only=True)
+               for c in row if c]
+    assert any("thinned for chart" in h for h in headers)
+    items = [O.OriginExportItem("same", m, res), O.OriginExportItem("same", m, res)]
+    O._assign_ids(items)
+    assert items[0].safe_id != items[1].safe_id

@@ -29,7 +29,7 @@ from ..viz import style as S
 
 __all__ = ["RunRecord", "ExcelReport", "write_workbook"]
 
-MAX_CHART_POINTS = 1200         # Excel charts choke long before this; curves get decimated
+MAX_CHART_POINTS = 1200         # longer curves are charted from an evenly thinned copy
 SHEET_NAME_LIMIT = 31
 _INVALID_SHEET = re.compile(r"[\[\]:*?/\\]")
 
@@ -43,6 +43,7 @@ class RunRecord:
     source: str = ""
     options: dict[str, Any] = field(default_factory=dict)
     note: str = ""
+    mapping: dict[str, str] = field(default_factory=dict)   # channel -> file column
 
     @property
     def title(self) -> str:
@@ -83,7 +84,7 @@ def write_workbook(report: ExcelReport, path: str | Path) -> Path:
             _validation_sheet(book, fmt, report)
 
         used: set[str] = {"Summary", "Calculations", "Validation"}
-        chart_targets: list[tuple[str, RunRecord, int, int]] = []
+        chart_targets: list[tuple[str, RunRecord, int, int, dict]] = []
         for group in _group_runs(report.runs, report.group_tables):
             if len(group) > 1 or group[0].measurement.kind == "table":
                 # One row per sample beats one sheet per sample for a table measurement.
@@ -202,7 +203,8 @@ def _manual_sheet(book, fmt, report: ExcelReport) -> None:
     ws.set_column("E:E", 44)
     ws.write(0, 0, "Manual calculations", fmt["title"])
     ws.write(1, 0, "Every equation evaluated in the Calculator, with its inputs.", fmt["subtitle"])
-    for c, h in enumerate(["Equation", "Inputs", "Result", "Unit", "Reference"]):
+    ws.set_column("F:F", 14)
+    for c, h in enumerate(["Equation", "Inputs", "Result", "Unit", "Reference", "± (1σ)"]):
         ws.write(3, c, h, fmt["header"])
     for i, entry in enumerate(report.manual):
         alt = i % 2 == 1
@@ -213,6 +215,11 @@ def _manual_sheet(book, fmt, report: ExcelReport) -> None:
         ws.write(r, 2, _safe(entry.get("value")), _num_fmt(fmt, entry.get("value", 0.0), alt))
         ws.write(r, 3, entry.get("unit", ""), cell)
         ws.write(r, 4, entry.get("reference", ""), cell)
+        sigma = entry.get("uncertainty")
+        if sigma is None:
+            ws.write(r, 5, "—", cell)
+        else:
+            ws.write(r, 5, _safe(sigma), _num_fmt(fmt, sigma, alt))
 
 
 def _validation_sheet(book, fmt, report: ExcelReport) -> None:
@@ -227,11 +234,14 @@ def _validation_sheet(book, fmt, report: ExcelReport) -> None:
     ws.set_column("F:F", 40)
     ws.set_column("G:G", 60)
     ws.write(0, 0, "Self-validation against the source papers", fmt["title"])
-    ws.write(1, 0, "Each row recomputes a value printed in one of the three papers. "
+    ws.write(1, 0, "Basis says what the reference is: 'paper' = printed in the paper, "
+                   "'cross-check' = physics/textbook value, 'ours' = our recomputation (the paper "
+                   "prints none, or prints a value we could not reproduce — shown under 'Paper prints'). "
                    "Rows marked 'documented' are inconsistencies in the papers themselves.",
              fmt["subtitle"])
-    for c, h in enumerate(["Case", "Computed", "Published", "Rel. error", "Status",
-                           "Source", "Comment"]):
+    ws.set_column("H:I", 13)
+    for c, h in enumerate(["Case", "Computed", "Reference", "Rel. error", "Status",
+                           "Source", "Comment", "Basis", "Paper prints"]):
         ws.write(3, c, h, fmt["header"])
     for i, res in enumerate(report.validation):
         r = 4 + i
@@ -251,10 +261,22 @@ def _validation_sheet(book, fmt, report: ExcelReport) -> None:
             ws.write(r, 4, "documented", fmt["note"])
         ws.write(r, 5, res.case.source, cell)
         ws.write(r, 6, getattr(res.case, "comment", "") or "", cell)
+        ws.write(r, 7, getattr(res.case, "basis", "paper"), cell)
+        printed = getattr(res.case, "printed_value", res.case.expected)
+        if printed is None:
+            ws.write(r, 8, "—", cell)
+        else:
+            ws.write(r, 8, _safe(printed), _num_fmt(fmt, printed, alt))
 
 
-def _run_sheet(book, fmt, record: RunRecord, name: str, include_curves: bool) -> tuple[int, int]:
-    """Write one run. Returns (first data row, number of data rows) for the chart sheet."""
+def _run_sheet(book, fmt, record: RunRecord, name: str,
+               include_curves: bool) -> tuple[int, int, dict[str, tuple[int, int]]]:
+    """Write one run.
+
+    Returns (first data row, number of data rows, {curve: (x column, points)}) for the
+    chart sheet. Curves longer than MAX_CHART_POINTS get an evenly thinned copy in extra
+    columns for the chart, so the chart spans the whole curve instead of its first part.
+    """
     ws = book.add_worksheet(name)
     ws.hide_gridlines(2)
     ws.set_column("A:A", 34)
@@ -293,7 +315,7 @@ def _run_sheet(book, fmt, record: RunRecord, name: str, include_curves: bool) ->
             row += 1
 
     if not include_curves or not record.result.curves:
-        return row + 2, 0
+        return row + 2, 0, {}
 
     # Curves start in column F so the results block stays readable next to them.
     start_col = 5
@@ -301,6 +323,8 @@ def _run_sheet(book, fmt, record: RunRecord, name: str, include_curves: bool) ->
     header_row = 5
     col = start_col
     longest = 0
+    chart_cols: dict[str, tuple[int, int]] = {}
+    thinned: list[tuple[str, np.ndarray, np.ndarray]] = []
     for key, (x, y) in record.result.curves.items():
         x = np.asarray(x, dtype=float).ravel()
         y = np.asarray(y, dtype=float).ravel()
@@ -310,10 +334,23 @@ def _run_sheet(book, fmt, record: RunRecord, name: str, include_curves: bool) ->
         ws.write(header_row, col + 1, f"{key} · y", fmt["header"])
         ws.write_column(header_row + 1, col, [_safe(v) for v in x[:n]], fmt["data"])
         ws.write_column(header_row + 1, col + 1, [_safe(v) for v in y[:n]], fmt["data"])
+        if n > MAX_CHART_POINTS:
+            idx = np.unique(np.linspace(0, n - 1, MAX_CHART_POINTS).round().astype(int))
+            thinned.append((key, x[idx], y[idx]))
+        else:
+            chart_cols[key] = (col, n)
         longest = max(longest, n)
         col += 2
+    for key, x, y in thinned:
+        ws.set_column(col, col + 1, 13)
+        ws.write(header_row, col, f"{key} · x (thinned for chart)", fmt["header"])
+        ws.write(header_row, col + 1, f"{key} · y (thinned for chart)", fmt["header"])
+        ws.write_column(header_row + 1, col, [_safe(v) for v in x], fmt["data"])
+        ws.write_column(header_row + 1, col + 1, [_safe(v) for v in y], fmt["data"])
+        chart_cols[key] = (col, int(x.size))
+        col += 2
     ws.freeze_panes(header_row + 1, 0)
-    return header_row + 1, longest
+    return header_row + 1, longest, chart_cols
 
 
 def _group_runs(runs: Sequence[RunRecord], group_tables: bool) -> list[list[RunRecord]]:
@@ -379,10 +416,9 @@ def _charts_sheet(book, fmt, report: ExcelReport, targets) -> None:
              fmt["subtitle"])
 
     anchor_row = 3
-    for sheet_name, record, first_row, n_rows in targets:
+    for sheet_name, record, first_row, n_rows, curve_cols in targets:
         if not n_rows:
             continue
-        curve_cols = {key: 5 + 2 * i for i, key in enumerate(record.result.curves)}
         for plot in record.measurement.plots:
             chart = _build_chart(book, sheet_name, record, plot, curve_cols, first_row,
                                  n_rows, report.theme)
@@ -405,16 +441,15 @@ def _build_chart(book, sheet_name: str, record: RunRecord, plot: Plot,
     keys = [k for k in keys if k[0] in curve_cols]
     if not keys:
         return None
+    del n_rows                                       # each curve carries its own length
 
     chart = book.add_chart({"type": "scatter", "subtype": "straight_with_markers"})
     data_index = 0
     for key, label, role in keys:
-        col = curve_cols[key]
-        n = min(n_rows, int(min(np.size(record.result.curves[key][0]),
-                               np.size(record.result.curves[key][1]))))
+        col, n = curve_cols[key]
         if n < 2:
             continue
-        last = first_row + min(n, MAX_CHART_POINTS) - 1
+        last = first_row + n - 1
         st = S.style_for(data_index, role, label=label, theme=theme,
                          style_hint=plot.series[0].style if plot.series else "scatter")
         if role != "fit":
@@ -481,7 +516,7 @@ def _provenance_sheet(book, fmt, report: ExcelReport) -> None:
         ("Exported", datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")),
         ("Project", report.project),
         ("Author", report.author or "-"),
-        ("Application", "AeroLab Studio"),
+        ("Application", f"AeroLab Studio {_app_version()}"),
         ("Python", sys.version.split()[0]),
         ("Platform", f"{platform.system()} {platform.release()}"),
         ("NumPy", np.__version__),
@@ -506,10 +541,43 @@ def _provenance_sheet(book, fmt, report: ExcelReport) -> None:
     r += 1
     for record in report.runs:
         opts = ", ".join(f"{k}={v}" for k, v in record.options.items()) or "defaults"
-        detail = f"{record.measurement.name} — {record.source or 'in-app data'} — {opts}"
+        lines = [record.measurement.name, f"Source: {record.source or 'in-app data'}"]
+        digest = _sha256(record.source)
+        if digest:
+            lines.append(f"SHA-256 of source file: {digest}")
+        if record.mapping:
+            lines.append("Columns: " + ", ".join(f"{k} ← {v}" for k, v in record.mapping.items()))
+        lines.append(f"Settings: {opts}")
+        for note in record.result.meta.get("import_notes", []):
+            lines.append(f"Import: {note}")
         ws.write(r, 0, record.sample, fmt["cell"])
-        ws.write(r, 1, detail, fmt["wrap"])
+        ws.write(r, 1, "\n".join(lines), fmt["wrap"])
+        ws.set_row(r, 15 * len(lines))
         r += 1
+
+
+def _app_version() -> str:
+    try:
+        from .. import __version__
+        return __version__
+    except Exception:                                        # noqa: BLE001
+        return "unknown version"
+
+
+def _sha256(path: str) -> str:
+    """Hash of the source file, so a reader can tell whether it changed since export."""
+    import hashlib
+    try:
+        p = Path(path)
+        if not path or not p.is_file():
+            return ""
+        h = hashlib.sha256()
+        with p.open("rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                h.update(block)
+        return h.hexdigest()
+    except OSError:
+        return ""
 
 
 # ---------------------------------------------------------------------------
