@@ -95,7 +95,7 @@ The basis of each case comes from the case's own source annotation in `core/vali
 ## Release
 
 - Version 1.1.0. The Word guide was updated: version, the changed passages, and a
-  What's-new section. Its screenshots are still those of 1.0.0.
+  What's-new section. Its screenshots were retaken from version 1.1.0.
 - The Windows installer and portable zip are built by `.github/workflows/windows-build.yml`
   (tests, PyInstaller, self-test of the exe, Inno Setup) and downloadable from each run.
 
