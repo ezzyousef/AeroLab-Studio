@@ -14,11 +14,13 @@ from typing import Any, Callable, Sequence
 import numpy as np
 
 from . import curves as C
+from . import units as U
 from .curves import AnalysisResult
 
 __all__ = [
     "Channel", "Option", "Series", "Plot", "Measurement",
     "MEASUREMENTS", "CATEGORIES", "get", "by_category", "match_columns", "search",
+    "guessed_channels", "prepare_data", "upgrade_options",
 ]
 
 
@@ -49,6 +51,10 @@ class Channel:
                 continue
             if h == n:
                 best = max(best, 1.0)
+            elif len(h) < 3 or len(n) < 3:
+                # A one- or two-letter header ("a", "x", "T") only counts as an exact
+                # match: as a substring it is inside almost every channel name.
+                continue
             elif h.startswith(n) or n.startswith(h):
                 best = max(best, 0.85)
             elif n in h or h in n:
@@ -142,6 +148,7 @@ class Measurement:
             raise ValueError(f"{self.name}: missing required column(s): {', '.join(missing)}")
         args = [np.asarray(data[c.key], dtype=float) for c in self.channels
                 if c.required or (c.key in data and data[c.key] is not None)]
+        options = upgrade_options(self.id, options)
         kwargs = {**self.defaults(), **{k: v for k, v in options.items() if v is not None}}
         kwargs = {k: v for k, v in kwargs.items() if k in {o.key for o in self.options}}
         result = self.analyser(*args, **kwargs)
@@ -162,6 +169,100 @@ class Measurement:
 
     def match_columns(self, headers: Sequence[str]) -> dict[str, int | None]:
         return match_columns(self, headers)
+
+
+# Options renamed since earlier releases: {measurement id: {old key: new key}}. Saved
+# sessions still carry the old keys; without this they would be silently dropped.
+_RENAMED_OPTIONS = {"dsc": {"exo_up": "endotherm_up"}}
+
+
+def upgrade_options(measurement_id: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Translate option keys saved by older versions to their current names."""
+    renames = _RENAMED_OPTIONS.get(measurement_id, {})
+    out = dict(options)
+    for old, new in renames.items():
+        if old in out:
+            value = out.pop(old)
+            out.setdefault(new, value)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# units on import
+# ---------------------------------------------------------------------------
+# Spellings seen in instrument exports -> the unit table's spelling.
+_UNIT_SPELLINGS = {
+    "c": "°C", "degc": "°C", "deg c": "°C", "oc": "°C", "℃": "°C", "celsius": "°C",
+    "f": "°F", "degf": "°F", "℉": "°F", "kelvin": "K",
+    "mm/mm": "-", "m/m": "-", "in/in": "-", "ratio": "-", "fraction": "-", "": "",
+    "n/mm2": "N/mm^2", "n/mm²": "N/mm^2", "cm3/g": "cm^3/g", "cm³/g": "cm^3/g",
+    "cm3/g stp": "cm^3/g", "cm³/g stp": "cm^3/g", "cc/g": "cm^3/g", "g/cm3": "g/cm^3",
+    "g/cm³": "g/cm^3", "kg/m3": "kg/m^3", "kg/m³": "kg/m^3", "1/s": "1/s", "s-1": "s^-1",
+    "mw/mg": "W/g", "w/g": "W/g", "pa.s": "Pa·s", "pa s": "Pa·s", "mpa.s": "mPa·s", "mpa s": "mPa·s",
+}
+
+
+def _canon_unit(unit: str, dimension: str) -> str | None:
+    """The unit table's spelling of `unit`, preferring the channel's own dimension."""
+    u = str(unit or "").strip()
+    if not u:
+        return ""
+    table = U.DIMENSIONS.get(dimension, {})
+    if u in table:
+        return u
+    low = u.lower()
+    spelled = _UNIT_SPELLINGS.get(low)
+    if spelled is not None:
+        return spelled
+    for name in table:                                   # case slips: "mpa", "KPA"
+        if name.lower() == low:
+            return name
+    for table2 in U.DIMENSIONS.values():
+        for name in table2:
+            if name.lower() == low:
+                return name
+    return None
+
+
+def prepare_data(measurement: Measurement, columns: Sequence[Sequence[float]],
+                 units: Sequence[str], mapping: dict[str, int | None]
+                 ) -> tuple[dict[str, np.ndarray], list[str]]:
+    """Columns for `measurement.run`, converted to each channel's unit.
+
+    A recognised unit of the right kind is converted (kPa -> MPa, K -> °C, mm/mm -> %).
+    A recognised unit of the wrong kind (N for a stress, mm for a strain) is refused —
+    that is a mis-mapped column, and converting nothing would give numbers that look
+    plausible and are wrong. Unrecognised or missing units are passed through with a note.
+    """
+    data: dict[str, np.ndarray] = {}
+    notes: list[str] = []
+    for ch in measurement.channels:
+        idx = mapping.get(ch.key)
+        if idx is None:
+            continue
+        values = np.asarray(columns[idx], dtype=float)
+        raw = units[idx] if idx < len(units) else ""
+        file_unit = _canon_unit(raw, ch.dimension)
+        if not raw or not ch.unit or file_unit == ch.unit:
+            data[ch.key] = values
+            continue
+        table = U.DIMENSIONS.get(ch.dimension, {})
+        if file_unit in table and ch.unit in table:
+            src, dst = table[file_unit], table[ch.unit]
+            data[ch.key] = ((values * src.factor + src.offset) - dst.offset) / dst.factor
+            notes.append(f"{ch.label}: converted {raw} → {ch.unit}")
+            continue
+        other = U.dimension_of(file_unit) if file_unit else None
+        if other is not None and other != ch.dimension and ch.unit in table:
+            raise ValueError(
+                f"{ch.label} needs {ch.unit}, but the mapped column is in {raw} "
+                f"({other.replace('_', ' ')}). Map the right column or convert it first.")
+        data[ch.key] = values
+        if ch.unit == "W/g" and raw.strip().lower() == "mw":
+            notes.append(f"{ch.label} is in mW — enter the sample mass in Settings to get W/g")
+        else:
+            notes.append(f"{ch.label}: unit “{raw}” not recognised — values used as {ch.unit}")
+    return data, notes
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +305,14 @@ def match_columns(measurement: Measurement, headers: Sequence[str]) -> dict[str,
     return mapping
 
 
+def guessed_channels(measurement: Measurement, headers: Sequence[str],
+                     mapping: dict[str, int | None]) -> list[str]:
+    """Channel keys filled by file order rather than by a header that names them."""
+    return [ch.key for ch in measurement.channels
+            if mapping.get(ch.key) is not None
+            and ch.matches(headers[mapping[ch.key]]) < 0.4]
+
+
 # ---------------------------------------------------------------------------
 # the registry
 # ---------------------------------------------------------------------------
@@ -221,14 +330,15 @@ MEASUREMENTS: tuple[Measurement, ...] = (
                 "single monotonic pull.",
         channels=(
             _ch("strain_pct", "Strain", "%", "dimensionless",
-                "tensile strain", "strain (%)", "elongation", "displacement", "ε",
+                "tensile strain", "strain (%)", "elongation", "ε",
                 help="Engineering strain in percent."),
             _ch("stress_mpa", "Stress", "MPa", "stress",
-                "tensile stress", "stress (MPa)", "engineering stress", "σ", "load"),
+                "tensile stress", "stress (MPa)", "engineering stress", "σ"),
         ),
         options=(
             Option("offset_yield", "Offset yield strain", "float", 0.002,
-                   "Offset used for the yield point (0.002 = the usual 0.2 % offset).",
+                   "Offset used for the yield point (0.002 = the usual 0.2 % offset). "
+                   "Set 0 to skip it — elastomers and foams have no meaningful offset yield.",
                    minimum=0.0, maximum=0.05),
             Option("min_window", "Minimum modulus window", "int", 8,
                    "Fewest points the automatic modulus search may use.", minimum=4, maximum=200),
@@ -252,7 +362,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
                 "ratcheting from a multi-cycle test.",
         channels=(
             _ch("strain_pct", "Strain", "%", "dimensionless", "cyclic strain", "elongation", "ε"),
-            _ch("stress_mpa", "Stress", "MPa", "stress", "cyclic stress", "σ", "load"),
+            _ch("stress_mpa", "Stress", "MPa", "stress", "cyclic stress", "σ"),
         ),
         options=(
             Option("zero_stress_fraction", "Zero-stress threshold", "float", 0.02,
@@ -284,6 +394,12 @@ MEASUREMENTS: tuple[Measurement, ...] = (
                  (Series("data", "Measured", "scatter", "data"),
                   Series("fit", "Basquin fit", "line", "fit")),
                  xscale="log", yscale="log"),
+        ),
+        options=(
+            Option("life_at_fraction", "Report life at", "float", 0.5,
+                   "Cycles to failure are predicted at this fraction of σ'f (0.5 = half "
+                   "the fatigue strength coefficient). Extrapolated if outside the tests.",
+                   minimum=0.01, maximum=0.99),
         ),
         analyser=C.fit_sn_basquin,
         reference="Omranpour et al. (2024a), Eq. 4 and Table 3",
@@ -365,6 +481,10 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         options=(
             Option("thresholds", "Loss thresholds", "range", (5.0, 10.0, 50.0, 65.0),
                    "Mass-loss percentages to report a temperature for."),
+            Option("dry_basis_at", "Dry basis at", "float", None,
+                   "If set, mass is renormalised to 100 % at this temperature so adsorbed "
+                   "water does not count as decomposition. Leave blank to use the first point.",
+                   minimum=0.0, maximum=1000.0, unit="°C"),
         ),
         plots=(
             Plot("tga", "TGA", "Temperature", "°C", "Weight", "%",
@@ -394,14 +514,19 @@ MEASUREMENTS: tuple[Measurement, ...] = (
             Option("heating_rate", "Heating rate", "float", 10.0,
                    "Needed to turn the peak area into J/g.", minimum=0.1, maximum=200.0,
                    unit="°C/min"),
-            Option("exo_up", "Exotherm points up", "bool", False,
-                   "Tick if the instrument plots exotherms upward."),
+            Option("endotherm_up", "Endotherms point up (exo down)", "bool", False,
+                   "Tick if melting peaks point upward in your file (exo-down convention, "
+                   "e.g. many TA Instruments exports)."),
+            Option("sample_mass_mg", "Sample mass", "float", None,
+                   "Only if heat flow is in mW: divides by this mass to get W/g. "
+                   "Leave blank when the data are already in W/g.",
+                   minimum=0.0, unit="mg"),
         ),
         plots=(
             Plot("dsc", "DSC thermogram", "Temperature", "°C", "Heat flow", "W/g",
                  (Series("DSC", "Heat flow", "line", "data"),
                   Series("smoothed", "Smoothed", "line", "fit")),
-                 note="Endotherm down unless the exo-up option is set."),
+                 note="Endotherms point down (exo up) unless “Endotherms point up” is ticked."),
         ),
         analyser=C.analyze_dsc,
         reference="Omranpour et al. (2024a), §3.2",
@@ -446,6 +571,9 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         options=(
             Option("bet_range", "BET range", "range", (0.05, 0.3),
                    "Relative-pressure window for the multipoint BET fit."),
+            Option("auto_range", "Choose BET range automatically", "bool", False,
+                   "Pick the widest window inside 0.01–0.35 that meets the Rouquerol "
+                   "criteria (positive C, V(1−p/p₀) increasing). Overrides the range above."),
             Option("pore_volume_at", "Gurvich point", "float", 0.99,
                    "Relative pressure at which total pore volume is read.",
                    minimum=0.5, maximum=0.999),

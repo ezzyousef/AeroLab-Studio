@@ -363,7 +363,7 @@ class Session(QObject):
             result = AR(measurement.id, metrics, curves, {"measurement": measurement.id})
             self.add_run(entry.get("sample", "sample"), measurement, result, record=False,
                          dataset_name=entry.get("dataset", ""), source=entry.get("source", ""),
-                         options=entry.get("options", {}))
+                         options=M.upgrade_options(measurement.id, entry.get("options", {})))
             loaded += 1
 
         for entry in payload.get("manual", []):

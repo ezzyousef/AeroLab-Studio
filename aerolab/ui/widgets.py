@@ -6,6 +6,7 @@ rectangle.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import Callable, Iterable, Sequence
 
 from PySide6.QtCore import (QEasingCurve, QEvent, QPoint, QPropertyAnimation, QSize, Qt,
@@ -543,9 +544,10 @@ class OptionEditor(QWidget):
 
     changed = Signal()
 
-    def __init__(self, options, parent: QWidget | None = None):
+    def __init__(self, options, parent: QWidget | None = None, values: dict | None = None):
         super().__init__(parent)
         self._editors: dict[str, tuple[str, QWidget]] = {}
+        self._values = dict(values or {})
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
@@ -555,6 +557,9 @@ class OptionEditor(QWidget):
         layout.addStretch(1)
 
     def _make(self, option) -> QWidget:
+        # Show what the run actually used, falling back to the default for settings it
+        # never stored -- otherwise re-running silently resets the user's choices.
+        option = replace(option, default=self._values.get(option.key, option.default))
         kind = option.kind
         if kind == "bool":
             box = QCheckBox()

@@ -120,3 +120,53 @@ def test_documented_discrepancies_explain_themselves():
     for case in V.CASES:
         if not case.expect_match:
             assert case.comment, f"{case.name} disagrees with the paper but says nothing"
+
+
+def test_import_converts_units_and_refuses_the_wrong_quantity():
+    import numpy as np
+    from aerolab.core import measurements as M
+
+    m = M.get("stress_strain")
+    data, notes = M.prepare_data(m, [[0, 0.01], [0, 2000]], ["mm/mm", "kPa"],
+                                 {"strain_pct": 0, "stress_mpa": 1})
+    assert np.allclose(data["strain_pct"], [0, 1]) and np.allclose(data["stress_mpa"], [0, 2])
+    assert len(notes) == 2
+    with pytest.raises(ValueError, match="force"):
+        M.prepare_data(m, [[0, 1], [0, 5]], ["%", "N"], {"strain_pct": 0, "stress_mpa": 1})
+    data, _ = M.prepare_data(M.get("tga"), [[373.15], [100]], ["K", "%"],
+                             {"temperature": 0, "weight_pct": 1})
+    assert np.isclose(data["temperature"][0], 100.0)
+
+
+def test_unnamed_columns_are_reported_as_guessed():
+    from aerolab.core import measurements as M
+
+    m = M.get("stress_strain")
+    headers = ["Time", "Load", "Extension"]
+    mapping = M.match_columns(m, headers)
+    assert set(M.guessed_channels(m, headers, mapping)) == {"strain_pct", "stress_mpa"}
+    headers = ["Strain", "Stress"]
+    assert M.guessed_channels(m, headers, M.match_columns(m, headers)) == []
+
+
+def test_old_dsc_option_name_still_applies():
+    from aerolab.core import measurements as M
+
+    assert M.upgrade_options("dsc", {"exo_up": True}) == {"endotherm_up": True}
+
+
+def test_uncertainty_is_nan_not_zero_when_the_derivative_fails():
+    def f(x):
+        if x <= 0:
+            raise ValueError("domain")
+        return math.sqrt(x)
+
+    eq = E.Equation("t_sqrt", "sqrt", "test", "", (E._V("x", "x", "-"),), E._V("y", "y", "-"), f)
+    value, sigma = eq.compute_with_uncertainty({"x": 4.0}, {"x": 0.1})
+    assert math.isclose(sigma, 0.1 / 4, rel_tol=1e-4)
+    # next to the domain edge the one-sided difference still gives a number
+    value, sigma = eq.compute_with_uncertainty({"x": 1e-9}, {"x": 1e-10})
+    assert math.isfinite(sigma) and sigma > 0
+    bad = E.Equation("t_bad", "bad", "test", "", (E._V("x", "x", "-"),), E._V("y", "y", "-"),
+                     lambda x: 1.0 if x == 2.0 else float("nan"))
+    assert math.isnan(bad.compute_with_uncertainty({"x": 2.0}, {"x": 0.1})[1])

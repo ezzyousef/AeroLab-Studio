@@ -299,3 +299,47 @@ def test_calculator_computes_every_equation_from_its_defaults(qapp):
         if page.result_label.text() == "—":
             blank.append(page.eq_list.item(i).text().split("\n")[0])
     assert not blank, f"these equations showed no result: {blank}"
+
+
+def test_analyse_all_runs_every_demo_and_skips_unidentified(qapp, tmp_path):
+    from aerolab.ui.app import MainWindow
+    from aerolab.ui.state import Session
+
+    messages: list[tuple[str, str]] = []
+    session = Session()
+    session.status.connect(lambda m, level: messages.append((m, level)))
+    window = MainWindow(session)
+    data_page = window.pages["data"]
+    data_page.load_samples()
+    n_demo = len(session.datasets)
+    odd = tmp_path / "mystery.csv"
+    odd.write_text("a,b\n1,2\n2,3\n3,5\n4,4\n", encoding="utf-8")
+    from aerolab.io import readers as R
+    session.add_datasets(R.read_any(odd))
+    qapp.processEvents()
+    data_page.analyse_all()
+    qapp.processEvents()
+    assert not [m for m, level in messages if level == "error"], messages
+    assert all(r.dataset_name != "mystery" for r in session.runs)
+    assert len({r.dataset_name for r in session.runs}) >= n_demo - 1
+    window.close()
+
+
+def test_calculator_converts_a_temperature_uncertainty(qapp):
+    from aerolab.core import equations as E
+    from aerolab.ui.app import MainWindow
+    from aerolab.ui.state import Session
+
+    window = MainWindow(Session())
+    calc = window.pages["calculator"]
+    calc._show_equation(E.get("mean_free_path"))
+    value_edit, unit_combo, sigma_edit = calc._inputs["T"]
+    unit_combo.setCurrentText("°F")
+    value_edit.setText("77")
+    sigma_edit.setText("9")                 # 9 °F = 5 K
+    qapp.processEvents()
+    text = calc.result_label.text()
+    assert "±" in text, text
+    value, sigma = (float(t.split()[0]) for t in text.split("±"))
+    assert abs(sigma / value - 5 / 298.15) < 0.02
+    window.close()

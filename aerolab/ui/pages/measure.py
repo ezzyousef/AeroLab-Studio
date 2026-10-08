@@ -175,7 +175,9 @@ class MeasurePage(Page):
         self.settings_hint.setText(
             "Change a setting and re-run — the original data is kept, so this is free to try.")
         self.btn_rerun.setEnabled(run.measurement.kind != "table")
-        self._option_editor = OptionEditor(run.measurement.options)
+        self._option_editor = OptionEditor(
+            run.measurement.options,
+            values=M.upgrade_options(run.measurement.id, {**run.measurement.defaults(), **run.options}))
         self.options_slot.addWidget(self._option_editor)
 
     def _draw(self) -> None:
@@ -206,8 +208,10 @@ class MeasurePage(Page):
             return
         options = self._option_editor.values()
         try:
-            data = {k: dataset.columns[v] for k, v in run.mapping.items() if v is not None}
+            data, notes = M.prepare_data(run.measurement, dataset.columns, dataset.units, run.mapping)
             result = run.measurement.run(data, **options)
+            if notes:
+                result.meta["import_notes"] = notes
         except Exception as exc:                                # noqa: BLE001 - shown to the user
             self.session.status.emit(f"Re-run failed: {exc}", "error")
             return

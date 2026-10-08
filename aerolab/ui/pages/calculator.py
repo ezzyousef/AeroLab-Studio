@@ -252,15 +252,14 @@ class CalculatorPage(Page):
             sigma_text = sigma_edit.text().strip()
             if sigma_text:
                 try:
-                    sigma_raw = float(sigma_text)
-                    sigmas[var.symbol] = abs(
-                        convert(sigma_raw, unit, var.unit, "dimensionless"
-                                if var.dimension == "temperature" else var.dimension)
-                        - (convert(0.0, unit, var.unit, var.dimension)
-                           if var.dimension == "temperature" else 0.0)
-                    ) if var.dimension in DIMENSIONS else abs(sigma_raw)
-                except (ValueError, KeyError):
-                    pass
+                    sigma_raw = abs(float(sigma_text))
+                except ValueError:
+                    self._set_result(None, f"{var.label}: uncertainty '{sigma_text}' is not a number.")
+                    return
+                # An uncertainty is a difference, so convert it as one: this scales °F to °C
+                # by 5/9 without the 32° offset, and works the same for every other unit.
+                sigmas[var.symbol] = abs(_convert(raw + sigma_raw, unit, var)
+                                         - _convert(raw, unit, var))
 
         try:
             if sigmas:
@@ -274,16 +273,17 @@ class CalculatorPage(Page):
         target = self.result_unit_combo.currentText()
         try:
             shown = convert(value, equation.output.unit, target, equation.output.dimension)
-            shown_sigma = (abs(convert(sigma, equation.output.unit, target,
-                                       equation.output.dimension))
-                           if sigma is not None and equation.output.dimension != "temperature"
-                           else sigma)
+            shown_sigma = (abs(convert(value + sigma, equation.output.unit, target,
+                                       equation.output.dimension) - shown)
+                           if sigma is not None and math.isfinite(sigma) else sigma)
         except KeyError:
             shown, shown_sigma = value, sigma
 
         text = format_value(shown, self.session.settings.get("decimals", 4))
         if shown_sigma is not None and math.isfinite(shown_sigma):
             text += f"  ± {format_value(shown_sigma, 2)}"
+        elif shown_sigma is not None:
+            text += "  ± (uncertainty unavailable at this point)"
         self._set_result(text, equation.notes)
         self._last = (value, equation.output.unit, dict(values))
 

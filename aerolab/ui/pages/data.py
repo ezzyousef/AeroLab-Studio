@@ -277,6 +277,7 @@ class DataPage(Page):
             return
         m = M.get(self.measure_combo.currentData())
         mapping = m.match_columns(ds.headers)
+        guessed = set(M.guessed_channels(m, ds.headers, mapping))
         self.map_table.setRowCount(len(m.channels))
         missing = 0
         for r, channel in enumerate(m.channels):
@@ -285,6 +286,10 @@ class DataPage(Page):
                                     if channel.unit else channel.label)
             if not channel.required:
                 need.setText(need.text() + "  — optional")
+            if channel.key in guessed:
+                need.setText(need.text() + "  — guessed from column order, check")
+                need.setToolTip("No header names this quantity, so the next unused column "
+                                "was taken. Pick the right column before analysing.")
             self.map_table.setItem(r, 0, need)
 
             combo = QComboBox()
@@ -299,7 +304,7 @@ class DataPage(Page):
             self.map_table.setItem(r, 2, QTableWidgetItem(unit or "—"))
             if channel.required and index is None:
                 missing += 1
-        self._set_confidence(missing, len(m.required_channels()))
+        self._set_confidence(missing, len(m.required_channels()), guessed=len(guessed))
 
     def _mapping_edited(self) -> None:
         ds = self.current_dataset()
@@ -310,8 +315,11 @@ class DataPage(Page):
                       if ch.required and self._mapped_index(r) is None)
         self._set_confidence(missing, len(m.required_channels()))
 
-    def _set_confidence(self, missing: int, needed: int) -> None:
-        if missing == 0:
+    def _set_confidence(self, missing: int, needed: int, guessed: int = 0) -> None:
+        if missing == 0 and guessed:
+            self.confidence.setText(f"{guessed} column(s) guessed — check")
+            self.confidence.setObjectName("PillWarn")
+        elif missing == 0:
             self.confidence.setText("all columns matched")
             self.confidence.setObjectName("PillGood")
         elif missing < needed:
@@ -339,16 +347,25 @@ class DataPage(Page):
 
     def analyse_all(self) -> None:
         added = 0
+        skipped: list[str] = []
         for i, ds in enumerate(self.session.datasets):
             self.file_list.setCurrentRow(i)
             m = M.get(self.measure_combo.currentData())
             mapping = m.match_columns(ds.headers)
-            if any(mapping.get(ch.key) is None for ch in m.required_channels()):
+            # Only run what the headers clearly identify: a dataset whose measurement or
+            # columns had to be guessed is left for the user to map by hand.
+            if (getattr(self, "_last_score", 0.0) < 0.5
+                    or any(mapping.get(ch.key) is None for ch in m.required_channels())
+                    or M.guessed_channels(m, ds.headers, mapping)):
+                skipped.append(ds.name)
                 continue
             added += 1 if self._run(ds, m, mapping, quiet=True) else 0
-        level = "success" if added else "warning"
-        self.session.status.emit(f"Analysed {added} of {len(self.session.datasets)} dataset(s)",
-                                 level)
+        level = "success" if added and not skipped else "warning"
+        text = f"Analysed {added} of {len(self.session.datasets)} dataset(s)"
+        if skipped:
+            text += (f"; {len(skipped)} need their columns checked by hand: "
+                     + ", ".join(skipped[:4]) + (" …" if len(skipped) > 4 else ""))
+        self.session.status.emit(text, level)
         if added:
             self.analysed.emit()
 
@@ -362,11 +379,15 @@ class DataPage(Page):
                     self.session.add_run(name, measurement, result, dataset_name=ds.name,
                                          source=ds.source, mapping=dict(mapping))
             else:
-                data = {k: ds.columns[v] for k, v in mapping.items() if v is not None}
+                data, notes = M.prepare_data(measurement, ds.columns, ds.units, mapping)
                 result = measurement.run(data)
+                if notes:
+                    result.meta["import_notes"] = notes
                 self.session.add_run(ds.name, measurement, result, dataset_name=ds.name,
                                      source=ds.source, mapping=dict(mapping),
                                      options=measurement.defaults())
+                if notes and not quiet:
+                    self.session.status.emit(f"{ds.name}: " + "; ".join(notes), "info")
         except Exception as exc:                                # noqa: BLE001 - shown to the user
             self.session.status.emit(f"{ds.name}: {exc}", "error")
             return False

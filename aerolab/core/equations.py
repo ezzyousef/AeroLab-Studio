@@ -69,7 +69,14 @@ class Equation:
         return self.fn(**kwargs)
 
     def compute_with_uncertainty(self, values: dict[str, float], sigmas: dict[str, float]) -> tuple[float, float]:
-        """First-order propagation using central differences (independent inputs)."""
+        """First-order (linearised) propagation, treating the inputs as independent.
+
+        Derivatives are central differences; next to a domain limit (a porosity of exactly
+        1, a zero thickness) a one-sided difference is used instead. If the derivative cannot
+        be evaluated at all the uncertainty is NaN -- reporting 0 would read as "exact".
+        Correlated inputs, or σ large enough that the function curves noticeably over ±σ,
+        are outside what this estimate covers.
+        """
         base = float(self.compute(**values))
         var = 0.0
         for var_name, sigma in sigmas.items():
@@ -77,14 +84,28 @@ class Equation:
                 continue
             x = float(values[var_name])
             step = abs(x) * 1e-5 if x else 1e-8
-            hi = dict(values, **{var_name: x + step})
-            lo = dict(values, **{var_name: x - step})
-            try:
-                deriv = (float(self.compute(**hi)) - float(self.compute(**lo))) / (2 * step)
-            except Exception:  # noqa: BLE001 - non-differentiable point
-                deriv = 0.0
+            deriv = self._derivative(values, var_name, x, step, base)
+            if not math.isfinite(deriv):
+                return base, float("nan")
             var += (deriv * float(sigma)) ** 2
         return base, math.sqrt(var)
+
+    def _derivative(self, values, name, x, step, base) -> float:
+        def at(v):
+            try:
+                out = float(self.compute(**dict(values, **{name: v})))
+            except Exception:  # noqa: BLE001 - outside the formula's domain
+                return float("nan")
+            return out if math.isfinite(out) else float("nan")
+
+        hi, lo = at(x + step), at(x - step)
+        if math.isfinite(hi) and math.isfinite(lo):
+            return (hi - lo) / (2 * step)
+        if math.isfinite(hi):
+            return (hi - base) / step
+        if math.isfinite(lo):
+            return (base - lo) / step
+        return float("nan")
 
     @property
     def input_symbols(self) -> tuple[str, ...]:
