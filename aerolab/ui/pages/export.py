@@ -1,7 +1,9 @@
 """Export page: Excel, Origin and image sets.
 
 Origin can take ten to twenty seconds to start, so the export runs on a worker thread and
-the window stays alive. If Origin is not installed the same button writes a LabTalk
+the window stays alive. It is one long-lived thread, not one per export: COM objects belong
+to the thread that created them, so an Origin session kept open after one export must be
+reached from the same thread by the next. If Origin is not installed the same button writes a LabTalk
 package instead — the work is not lost, it just happens on another machine.
 """
 from __future__ import annotations
@@ -9,7 +11,7 @@ from __future__ import annotations
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QGridLayout, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
                                QVBoxLayout, QWidget)
@@ -24,15 +26,12 @@ __all__ = ["ExportPage"]
 
 
 class _OriginWorker(QObject):
-    """Runs the Origin export off the UI thread."""
+    """Lives on the Origin thread and runs each export request it receives there."""
     finished = Signal(object, str)          # OriginResult | None, error text
 
-    def __init__(self, items, folder, palette, theme, save_images, visible, keep_open, force):
-        super().__init__()
-        self._args = (items, folder, palette, theme, save_images, visible, keep_open, force)
-
-    def run(self) -> None:
-        items, folder, palette, theme, save_images, visible, keep_open, force = self._args
+    @Slot(object)
+    def run(self, args) -> None:
+        items, folder, palette, theme, save_images, visible, keep_open, force = args
         try:
             result = O.export_to_origin(items, folder, palette_name=palette, theme=theme,
                                         save_images=save_images, visible=visible,
@@ -46,11 +45,13 @@ class ExportPage(Page):
     title = "Export"
     subtitle = "One Excel workbook, an Origin project, or a folder of figures."
     glyph = "↗"
+    _origin_request = Signal(object)
 
     def __init__(self, session, parent=None):
         super().__init__(session, parent)
         self._thread: QThread | None = None
         self._worker: _OriginWorker | None = None
+        self._origin_busy = False
         self._build()
         session.runs_changed.connect(self.refresh)
         session.manual_changed.connect(self.refresh)
@@ -275,7 +276,7 @@ class ExportPage(Page):
         if not runs:
             self.session.status.emit("Select at least one run to export.", "warning")
             return
-        if self._thread is not None:
+        if self._origin_busy:
             self.session.status.emit("An Origin export is already running.", "warning")
             return
         start = self.session.settings.get("last_export_dir", str(Path.home()))
@@ -292,37 +293,42 @@ class ExportPage(Page):
         self.btn_script.setEnabled(False)
         self.session.busy.emit(True, "Building the Origin project…")
 
+        self._ensure_origin_thread()
+        self._origin_busy = True
+        self._origin_request.emit((items, folder, self.session.palette_name, self.session.theme,
+                                   self.chk_images.isChecked(), self.chk_visible.isChecked(),
+                                   self.chk_keep.isChecked(), force_script))
+
+    def _ensure_origin_thread(self) -> None:
+        """Start the Origin thread on first use; every later export reuses it."""
+        if self._thread is not None:
+            return
         self._thread = QThread(self)
-        self._worker = _OriginWorker(items, folder, self.session.palette_name,
-                                     self.session.theme, self.chk_images.isChecked(),
-                                     self.chk_visible.isChecked(), self.chk_keep.isChecked(),
-                                     force_script)
+        self._thread.setObjectName("OriginExport")
+        self._worker = _OriginWorker()
         self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
+        self._origin_request.connect(self._worker.run)        # queued: different threads
         self._worker.finished.connect(self._origin_done)
         self._thread.start()
 
     def is_busy(self) -> bool:
-        return self._thread is not None and self._thread.isRunning()
+        return self._origin_busy
 
     def wait_for_export(self, msec: int = 120_000) -> bool:
-        """Let a running Origin export finish. Qt aborts if a live QThread is destroyed."""
+        """Stop the Origin thread, letting a running export finish first. Called when the
+        window closes: Qt aborts the process if a running QThread is destroyed."""
         if self._thread is None:
             return True
-        self._thread.quit()
+        self._thread.quit()                 # ends after the request in progress returns
         finished = self._thread.wait(msec)
         self._thread = None
         self._worker = None
         return finished
 
     def _origin_done(self, result, error: str) -> None:
+        self._origin_busy = False
         self.busy.stop()
         self.session.busy.emit(False, "")
-        if self._thread is not None:
-            self._thread.quit()
-            self._thread.wait(5000)
-            self._thread = None
-            self._worker = None
         self.btn_origin.setEnabled(True)
         self.btn_script.setEnabled(True)
         if error or result is None:

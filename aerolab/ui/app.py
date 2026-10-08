@@ -372,8 +372,9 @@ class MainWindow(QMainWindow):
             if answer == QMessageBox.Yes:
                 event.ignore()
                 return
-            # Closing anyway: the thread must still be joined, or Qt aborts the process
-            # when a running QThread is destroyed.
+        if export is not None:
+            # The Origin thread outlives single exports, so it is joined on every close --
+            # Qt aborts the process when a running QThread is destroyed.
             export.wait_for_export()
         self.session.save_settings()
         super().closeEvent(event)

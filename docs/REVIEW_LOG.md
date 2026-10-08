@@ -90,7 +90,7 @@ The basis of each case comes from the case's own source annotation in `core/vali
 | Excel charts showed only the first 1200 points of a long curve | **fixed**: a thinned copy of the whole curve is charted |
 | Provenance lacked the app version, the column mapping and a file fingerprint | **fixed**: all three, plus the import notes |
 | Origin files from two runs with one sample name overwrote each other | **fixed**: unique ids |
-| Origin COM automation is called from the UI thread | **open**: needs a Windows machine with Origin to change and test safely |
+| Origin COM threading | **fixed**: the export already ran on a worker thread, but each export started a new one. COM objects belong to the thread that created them, so with "Keep Origin open" a second export reached a session made on a thread that no longer existed. All exports now use one long-lived Origin thread, which is joined when the window closes; a test checks the reuse. Untested against a real Origin installation (none on the build machines). |
 
 ## Release
 
@@ -101,7 +101,4 @@ The basis of each case comes from the case's own source annotation in `core/vali
 
 ## Still open
 
-- Origin automation runs on the UI thread, so the window waits while Origin builds the
-  project. Moving it to a worker thread needs COM initialised in that thread. That can only
-  be tested on Windows with Origin installed, so it was left as it is rather than changed
-  untested.
+- The Origin path has only been exercised in script-package mode; a live run against an installed Origin is still to be done on a Windows machine that has it.

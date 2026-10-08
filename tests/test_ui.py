@@ -404,3 +404,35 @@ def test_mapping_table_keeps_only_the_current_pickers(qapp):
              if w not in current and not w.isHidden()]
     assert not stale
     window.close()
+
+
+def test_origin_exports_reuse_one_thread(qapp, tmp_path, monkeypatch):
+    """Origin's COM objects belong to the thread that made them, so a session kept open
+    after one export must be reached from that same thread by the next one."""
+    import time
+    from PySide6.QtWidgets import QFileDialog
+    from aerolab.ui.app import MainWindow
+    from aerolab.ui.state import Session
+
+    session = Session()
+    window = MainWindow(session)
+    data = window.pages["data"]
+    data.load_samples()
+    data.analyse_all()
+    export = window.pages["export"]
+    export.refresh()
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(tmp_path)))
+    threads = []
+    for _ in range(2):
+        export.export_origin(force_script=True)      # no Origin here: LabTalk package
+        threads.append(export._thread)
+        deadline = time.time() + 60
+        while export.is_busy() and time.time() < deadline:
+            qapp.processEvents()
+            time.sleep(0.02)
+        assert not export.is_busy()
+    assert threads[0] is threads[1] and threads[0].isRunning()
+    assert any(tmp_path.rglob("*.ogs"))
+    assert export.wait_for_export()
+    window.close()
