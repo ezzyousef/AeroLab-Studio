@@ -333,3 +333,11 @@ def test_long_curves_are_charted_whole_and_ids_are_unique(tmp_path, analysed):
     items = [O.OriginExportItem("same", m, res), O.OriginExportItem("same", m, res)]
     O._assign_ids(items)
     assert items[0].safe_id != items[1].safe_id
+
+
+def test_nan_in_an_early_row_does_not_hide_the_header(tmp_path):
+    path = tmp_path / "gap.csv"
+    path.write_text("Strain (%),Stress (MPa)\n0,0\n1,NaN\n2,2\n3,3\n4,4\n", encoding="utf-8")
+    ds = R.read_any(path)[0]
+    assert ds.headers == ["Strain", "Stress"]
+    assert ds.n_rows == 5

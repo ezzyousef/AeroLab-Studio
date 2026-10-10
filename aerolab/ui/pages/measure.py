@@ -180,7 +180,7 @@ class MeasurePage(Page):
         self.btn_rerun.setEnabled(run.measurement.kind != "table")
         self._option_editor = OptionEditor(
             run.measurement.options,
-            values=M.upgrade_options(run.measurement.id, {**run.measurement.defaults(), **run.options}))
+            values={**run.measurement.defaults(), **M.upgrade_options(run.measurement.id, run.options)})
         self._option_editor.changed.connect(self._settings_edited)
         self.options_slot.addWidget(self._option_editor)
 

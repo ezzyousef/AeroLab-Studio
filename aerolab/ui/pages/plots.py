@@ -210,12 +210,15 @@ def _merge(runs, template: Plot, show_fits: bool):
     # Several series of one role (elastic and plastic data on the strain-life plot) need
     # their own names, or the second would overwrite the first under the sample's name.
     per_role = {r: sum(1 for _c, rr, _l in wanted if rr == r) for _c, r, _l in wanted}
-    seen: dict[str, int] = {}
+    used: set[str] = set()
     for run in runs:
-        # Two runs may share a sample name (re-analysed, or two files called the same).
-        n = seen.get(run.sample, 0)
-        seen[run.sample] = n + 1
-        sample = run.sample if n == 0 else f"{run.sample} ({n + 1})"
+        # Two runs may share a sample name (re-analysed, or two files called the same),
+        # and a generated "A (2)" may itself be another run's real name.
+        sample, n = run.sample, 1
+        while sample in used:
+            n += 1
+            sample = f"{run.sample} ({n})"
+        used.add(sample)
         for curve_key, role, series_label in wanted:
             if role == "fit" and not show_fits:
                 continue

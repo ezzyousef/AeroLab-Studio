@@ -170,3 +170,34 @@ def test_uncertainty_is_nan_not_zero_when_the_derivative_fails():
     bad = E.Equation("t_bad", "bad", "test", "", (E._V("x", "x", "-"),), E._V("y", "y", "-"),
                      lambda x: 1.0 if x == 2.0 else float("nan"))
     assert math.isnan(bad.compute_with_uncertainty({"x": 2.0}, {"x": 0.1})[1])
+
+
+# --------------------------------------------------------------------------- curve analyses
+def test_dry_basis_tga_finds_its_loss_temperatures():
+    from aerolab.core import curves as C
+
+    r = C.analyze_tga([20, 100, 200, 300, 400], [100, 95, 90, 70, 50], dry_basis_at=100)
+    got = {m.name: m.value for m in r.metrics}
+    assert got["T at 5 % loss"] == pytest.approx(195.0)
+    assert got["T at 10 % loss"] == pytest.approx(222.5)
+
+
+def test_modulus_on_a_short_dense_curve_is_not_a_secant():
+    import numpy as np
+    from aerolab.core import curves as C
+
+    e = np.linspace(0, 1, 10001)
+    s = 100 * np.maximum(e - 0.02, 0)
+    modulus, _r2, _window = C._auto_modulus(e, s, 5)
+    assert modulus == pytest.approx(10000, rel=1e-6)
+
+
+def test_bet_standard_error_includes_the_covariance():
+    import numpy as np
+    from aerolab.core import curves as C
+
+    x = np.array([.05, .1, .15, .2, .25, .3])
+    v = 1000 * x / ((1 - x) * (1 + 99 * x))
+    v[2] *= 1.01
+    vm = next(m for m in C.analyze_sorption_bet(x, v).metrics if m.name.startswith("Monolayer"))
+    assert vm.se == pytest.approx(0.02813, rel=1e-3)

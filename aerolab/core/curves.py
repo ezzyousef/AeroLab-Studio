@@ -96,7 +96,9 @@ def _smooth(y: np.ndarray, window: int | None = None, poly: int = 3) -> np.ndarr
 
 
 def _interp_crossing(x: np.ndarray, y: np.ndarray, level: float) -> float | None:
-    """First x where y crosses `level` (linear interpolation)."""
+    """First x where y crosses `level` (linear interpolation); NaN points are skipped."""
+    finite = np.isfinite(x) & np.isfinite(y)
+    x, y = x[finite], y[finite]
     d = y - level
     sign = np.sign(d)
     idx = np.where(np.diff(sign) != 0)[0]
@@ -214,7 +216,15 @@ def _auto_modulus(e: np.ndarray, s: np.ndarray, min_window: int,
     cyy = np.concatenate([[0.0], np.cumsum(ys * ys)])
     cxy = np.concatenate([[0.0], np.cumsum(xs * ys)])
 
-    lengths = sorted({max(4, min_window), int(limit * 0.05), int(limit * 0.10), int(limit * 0.2), int(limit * 0.3)})
+    # A short curve may not reach the span floor within its first half; ask for what it can give.
+    min_span_pct = min(min_span_pct, 0.5 * float(e[limit - 1] - e[0]))
+    lengths = {max(4, min_window), int(limit * 0.05), int(limit * 0.10), int(limit * 0.2), int(limit * 0.3)}
+    step = float(np.median(np.diff(e[:limit])))
+    if step > 0:
+        # Dense files: the fractional lengths may all span less than the floor.
+        L_span = int(math.ceil(min_span_pct / step)) + 1
+        lengths |= {L_span, 2 * L_span}
+    lengths = sorted(lengths)
     lengths = [L for L in lengths if max(4, min_window) <= L <= limit]
     best_sets = []
     for L in lengths:
@@ -511,7 +521,10 @@ def analyze_tga(temperature: Sequence[float], weight_pct: Sequence[float], *,
     peaks, props = signal.find_peaks(dtg_s, prominence=float(np.nanmax(dtg_s)) * 0.08 if np.nanmax(dtg_s) > 0 else None)
     for i, p in enumerate(peaks[:3], start=1):
         metrics.append(Metric(f"DTG peak {i}", float(T[p]), "°C", f"rate {dtg_s[p]:.3f} %/°C"))
-    metrics.append(Metric("Residue at final temperature", float(w[-1]), "%", f"at {T[-1]:.0f} °C"))
+    residue_note = f"at {T[-1]:.0f} °C, % of the initial weight"
+    if dry_basis_at is not None and math.isfinite(float(dry_basis_at)):
+        residue_note += f"; {w[-1] / w0 * 100.0:.2f} % on the dry basis"
+    metrics.append(Metric("Residue at final temperature", float(w[-1]), "%", residue_note))
     metrics.append(Metric("Total mass loss", float(loss[-1]), "%", basis_note))
     metrics.append(Metric("Onset temperature", _onset_temperature(T, w), "°C",
                           "steepest-descent tangent meets the initial plateau level (mean of the first 5 % of points)"))
@@ -801,7 +814,8 @@ def _bet_fit(x: np.ndarray, v: np.ndarray) -> dict | None:
     c_const = 1.0 + slope / intercept
     return {"slope": slope, "intercept": intercept, "v_m": v_m, "C": c_const,
             "r2": float(fit.rvalue ** 2), "y": y, "se_slope": float(fit.stderr),
-            "se_intercept": float(fit.intercept_stderr)}
+            "se_intercept": float(fit.intercept_stderr),
+            "cov_si": float(-np.mean(x) * fit.stderr ** 2)}
 
 
 def _rouquerol_problems(x: np.ndarray, v: np.ndarray, f: dict) -> list[str]:
@@ -872,7 +886,8 @@ def analyze_sorption_bet(p_p0: Sequence[float], volume_stp: Sequence[float], *,
     problems = _rouquerol_problems(x[sel], v[sel], f)
     v_m, c_const = f["v_m"], f["C"]
     surface = v_m * AVOGADRO * N2_CROSS_SECTION / MOLAR_VOLUME_STP        # m^2/g
-    se_vm = v_m ** 2 * math.sqrt(f["se_slope"] ** 2 + f["se_intercept"] ** 2)   # ignores their covariance
+    var_sum = f["se_slope"] ** 2 + f["se_intercept"] ** 2 + 2.0 * f["cov_si"]
+    se_vm = v_m ** 2 * math.sqrt(max(var_sum, 0.0))
     se_surface = se_vm * AVOGADRO * N2_CROSS_SECTION / MOLAR_VOLUME_STP
     x_lo, x_hi = float(x[sel].min()), float(x[sel].max())
 

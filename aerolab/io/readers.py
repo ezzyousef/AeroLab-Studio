@@ -245,12 +245,14 @@ def _parse_delimited(lines: Sequence[str], name: str, source: str, *,
                    source=source, meta=meta, text_columns=text_columns)
 
 
+_MISSING_NUMBERS = {"nan", "inf", "infinity"}
 _NUMBER_RE = re.compile(r"^[+-]?(\d[\d.,]*|[.,]\d+)([eEdD][+-]?\d+)?%?$")
 
 
 def _numberish(line: str) -> int:
     """How many tokens on a line look like numbers (delimiter-agnostic)."""
-    return sum(1 for t in re.split(r"[\s,;|]+", line.strip()) if t and _NUMBER_RE.match(t))
+    return sum(1 for t in re.split(r"[\s,;|]+", line.strip())
+               if t and (_NUMBER_RE.match(t) or t.lower().lstrip("+-") in _MISSING_NUMBERS))
 
 
 def _table_start(body: Sequence[str], delimiter: str | None) -> int:
