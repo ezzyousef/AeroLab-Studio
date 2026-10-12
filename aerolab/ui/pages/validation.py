@@ -99,7 +99,9 @@ class ValidationPage(Page):
         self.table.fill(rows)
 
         # colour the status column so the eye finds the exceptions
-        colours = {"reproduced": "#0B7A4B", "documented": "#9A6400", "FAILED": "#B3261E"}
+        from ..theme import colours as theme_colours
+        c = theme_colours(self.session.theme)
+        colours = {"reproduced": c["good"], "documented": c["warn"], "FAILED": c["bad"]}
         for row_index in range(self.table.rowCount()):
             item = self.table.item(row_index, 6)
             if item is not None and item.text() in colours:
@@ -112,3 +114,7 @@ class ValidationPage(Page):
             self.session.status.emit(
                 f"{summary['failed']} validation case(s) failed — the equation library "
                 "disagrees with the papers somewhere.", "error")
+
+    def on_theme_changed(self, theme: str) -> None:
+        super().on_theme_changed(theme)
+        self.refresh()                       # status colours follow the theme

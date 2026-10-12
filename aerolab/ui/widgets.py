@@ -254,6 +254,7 @@ class ToastHost(QWidget):
 
         while len(self._toasts) > 4:
             self._dismiss(self._toasts[0])
+        msec = {"error": 15000, "warning": 9000}.get(level, msec)
         QTimer.singleShot(msec, lambda: self._dismiss(toast))
         self._reposition()
 
@@ -307,6 +308,9 @@ class DropZone(QFrame):
         self.setAcceptDrops(True)
         self.setProperty("hot", "false")
         self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName("Import data files")
+        self.setAccessibleDescription("Press Enter or Space to browse for files, or drop files here.")
         self.setMinimumHeight(128)
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
@@ -341,6 +345,12 @@ class DropZone(QFrame):
         if paths:
             self.files_dropped.emit(paths)
             event.acceptProposedAction()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.clicked.emit()
+            return
+        super().keyPressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.LeftButton:
@@ -530,6 +540,9 @@ class FieldRow(QWidget):
         name = QLabel(label)
         name.setMinimumWidth(160)
         name.setWordWrap(True)
+        name.setBuddy(widget)
+        if not widget.accessibleName():
+            widget.setAccessibleName(label)
         top.addWidget(name, 3)
         top.addWidget(widget, 3)
         if unit_widget is not None:
@@ -552,6 +565,7 @@ class OptionEditor(QWidget):
     def __init__(self, options, parent: QWidget | None = None, values: dict | None = None):
         super().__init__(parent)
         self._editors: dict[str, tuple[str, QWidget]] = {}
+        self._labels: dict[str, str] = {o.key: o.label for o in options}
         self._values = dict(values or {})
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -598,6 +612,25 @@ class OptionEditor(QWidget):
         edit.editingFinished.connect(self.changed.emit)
         self._editors[option.key] = ("float", edit)
         return edit
+
+    def invalid(self) -> list[tuple[str, str, QWidget]]:
+        """(label, text, editor) for every non-empty number or range entry that cannot be
+        read, so a typo is reported instead of silently becoming "not set"."""
+        bad = []
+        for key, (kind, widget) in self._editors.items():
+            if kind not in ("float", "range"):
+                continue
+            text = widget.text().strip()
+            if not text:
+                continue
+            parts = [p.strip() for p in text.replace(";", ",").split(",")] if kind == "range" else [text]
+            for part in parts:
+                try:
+                    float(part)
+                except ValueError:
+                    bad.append((self._labels.get(key, key), text, widget))
+                    break
+        return bad
 
     def values(self) -> dict:
         out: dict = {}

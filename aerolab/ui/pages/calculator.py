@@ -201,6 +201,11 @@ class CalculatorPage(Page):
             row_layout.addWidget(sigma_edit, 1)
 
             label = f"{var.label}  ({var.symbol})"
+            # Built per equation, after the page-wide accessibility pass: name each part here.
+            value_edit.setAccessibleName(f"{var.label} value")
+            unit_combo.setAccessibleName(f"{var.label} unit")
+            sigma_edit.setAccessibleName(f"{var.label} uncertainty")
+            row.setFocusProxy(value_edit)          # the label's Alt+key lands on the value
             self.fields.addWidget(FieldRow(label, row, help_text=var.help))
             self._inputs[var.symbol] = (value_edit, unit_combo, sigma_edit)
         self.fields.addStretch(1)

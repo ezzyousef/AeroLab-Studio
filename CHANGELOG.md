@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.0
+
+- **Figures in the lab's house style (Figure Studio's):** the "Review" palette and Figure Studio's Light/Dark colours, DejaVu Sans with bold axis titles and tick labels, an open frame, outward ticks, a horizontal grid only and a frameless legend — on screen and in every PNG/SVG/PDF export.
+- **Accessibility (WCAG 2.2 AA), from a UX/accessibility review:**
+  - Visible keyboard focus on buttons, inputs, check boxes, radio buttons and table items.
+  - Input and check-box outlines that meet 3:1 contrast.
+  - Accent-coloured text (selected tabs, link-style buttons) at 4.5:1 or better in both themes.
+  - Readable section headings in the side bar.
+  - Labels tied to their inputs (Alt+letter focuses the field; screen readers announce it).
+- **House accent colour:** the house blue #2E6FD9 (a lighter tint with dark text in the dark theme), with a separate text tint so it passes 4.5:1 everywhere. Settings saved with the old default palette move to "review" once; a palette you chose stays.
+- **Invalid settings are no longer ignored:** a value that is not a number (e.g. "0,2x") is reported and selected instead of silently becoming "not set".
+- **Import drop zone works from the keyboard:** Tab to it and press Enter or Space.
+- **Ctrl+Z works again** (a duplicate shortcut made Undo ambiguous, so Qt ignored it); Redo is Ctrl+Shift+Z or Ctrl+Y.
+- **Ctrl+1 … Ctrl+9** page shortcuts are shown in the View menu.
+- **Keyboard:** focus ring on the navigation buttons and checked boxes; Tab leaves tables; the plot toolbar is reachable; every caption is tied to its input, including the calculator's value, unit and ± fields.
+- **Validation page** status colours follow the dark theme; error messages stay on screen for 15 s (warnings 9 s).
+
 ## 1.1.0
 
 See `docs/REVIEW_LOG.md` for every review finding and what was done.

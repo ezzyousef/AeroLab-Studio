@@ -23,6 +23,9 @@ _EXTRA = {
         "good_bg": "#E7F6EE", "warn_bg": "#FDF3DC", "bad_bg": "#FCEBEA",
         "field": "#FFFFFF", "disabled": "#9AA1AB",
         "on_accent": "#FFFFFF",
+        # Inputs and check/radio outlines: >= 3:1 (WCAG 1.4.11). The accent as text: >= 4.5:1
+        # on surface and raised panels (the fill accent itself reaches 4.46:1 on raised).
+        "control": "#67707C", "accent_text": "#2B6BD2", "rail_heading": "#9AA3AF",
     },
     "dark": {
         "rail": "#0D1014", "rail_text": "#9AA3AF", "rail_active": "#FFFFFF",
@@ -35,10 +38,11 @@ _EXTRA = {
         # Measured against WCAG AA (4.5:1): white on the dark accent was 3.6:1 and the
         # accent as text on raised panels 4.4:1. Dark text on a lighter accent (ACCENTS) fixes both.
         "on_accent": "#0B1220",
+        "control": "#8595A8", "accent_text": "#6798ED", "rail_heading": "#8E98A6",
     },
 }
 
-ACCENTS = {"light": "#0072B2", "dark": "#4A93EA"}
+ACCENTS = {"light": "#2E6FD9", "dark": "#6798ED"}
 
 
 def colours(theme: str = "light") -> dict[str, str]:
@@ -71,7 +75,7 @@ QToolTip {{
 #NavBrand {{ color: #FFFFFF; font-size: 16px; font-weight: 700; padding: 2px 0 0 2px; }}
 #NavVersion {{ color: {c['rail_text']}; font-size: 11px; padding: 0 0 2px 2px; }}
 #NavSection {{
-    color: #6B7480; font-size: 10px; font-weight: 700;
+    color: {c['rail_heading']}; font-size: 10px; font-weight: 700;
     letter-spacing: 1.1px; padding: 14px 12px 4px 12px;
 }}
 QPushButton#NavButton {{
@@ -80,6 +84,7 @@ QPushButton#NavButton {{
     text-align: left; font-size: 13px; font-weight: 500;
 }}
 QPushButton#NavButton:hover {{ background: rgba(255,255,255,0.07); color: #FFFFFF; }}
+QPushButton#NavButton:focus {{ border: 2px solid #FFFFFF; padding: 7px 10px; }}
 QPushButton#NavButton:checked {{
     background: {c['accent']}; color: {c['on_accent']}; font-weight: 600;
 }}
@@ -117,6 +122,7 @@ QPushButton {{
     padding: 7px 14px; font-weight: 550;
 }}
 QPushButton:hover {{ background: {c['hover']}; border-color: {c['accent']}; }}
+QPushButton:focus {{ border: 2px solid {c['accent']}; padding: 6px 13px; }}
 QPushButton:pressed {{ background: {c['selected']}; }}
 QPushButton:disabled {{ color: {c['disabled']}; border-color: {c['border']}; background: {c['sunken']}; }}
 QPushButton#Primary {{
@@ -124,9 +130,11 @@ QPushButton#Primary {{
     font-weight: 600; padding: 8px 18px;
 }}
 QPushButton#Primary:hover {{ background: {c['accent']}; border-color: {c['fg']}; }}
+QPushButton#Primary:focus {{ border: 2px solid {c['fg']}; padding: 7px 17px; }}
 QPushButton#Primary:disabled {{ background: {c['disabled']}; border-color: {c['disabled']}; color: {c['bg']}; }}
-QPushButton#Ghost {{ background: transparent; border: none; color: {c['accent']}; padding: 5px 8px; }}
+QPushButton#Ghost {{ background: transparent; border: none; color: {c['accent_text']}; padding: 5px 8px; }}
 QPushButton#Ghost:hover {{ background: {c['hover']}; }}
+QPushButton#Ghost:focus {{ border: 2px solid {c['accent']}; padding: 3px 6px; }}
 QPushButton#Danger {{ color: {c['bad']}; border-color: {c['bad']}; background: transparent; }}
 QPushButton#Danger:hover {{ background: {c['bad_bg']}; }}
 QPushButton#Chip {{
@@ -138,11 +146,12 @@ QPushButton#Chip:checked {{ background: {c['accent']}; color: {c['on_accent']}; 
 /* ---------- inputs ---------- */
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {{
     background: {c['field']}; color: {c['fg']};
-    border: 1px solid {c['border_strong']}; border-radius: 8px;
+    border: 1px solid {c['control']}; border-radius: 8px;
     padding: 6px 10px; selection-background-color: {c['accent']}; selection-color: {c['on_accent']};
 }}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus {{
-    border: 1px solid {c['accent']};
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus,
+QTextEdit:focus {{
+    border: 2px solid {c['accent']}; padding: 5px 9px;
 }}
 QLineEdit:disabled, QComboBox:disabled, QDoubleSpinBox:disabled {{
     background: {c['sunken']}; color: {c['disabled']};
@@ -161,15 +170,19 @@ QComboBox QAbstractItemView {{
 QCheckBox {{ spacing: 8px; }}
 QCheckBox::indicator {{
     width: 17px; height: 17px; border-radius: 5px;
-    border: 1px solid {c['border_strong']}; background: {c['field']};
+    border: 1px solid {c['control']}; background: {c['field']};
 }}
 QCheckBox::indicator:checked {{ background: {c['accent']}; border-color: {c['accent']}; }}
+QCheckBox::indicator:focus, QRadioButton::indicator:focus {{ border: 2px solid {c['accent']}; }}
 QCheckBox::indicator:disabled {{ background: {c['sunken']}; }}
 QRadioButton::indicator {{
     width: 16px; height: 16px; border-radius: 8px;
-    border: 1px solid {c['border_strong']}; background: {c['field']};
+    border: 1px solid {c['control']}; background: {c['field']};
 }}
 QRadioButton::indicator:checked {{ background: {c['accent']}; border: 4px solid {c['field']}; }}
+QCheckBox::indicator:checked:focus {{ border: 2px solid {c['fg']}; }}
+QRadioButton::indicator:checked:focus {{ border: 3px solid {c['fg']}; }}
+QToolButton:focus {{ border: 2px solid {c['accent']}; border-radius: 6px; }}
 
 /* ---------- tables ---------- */
 QTableWidget, QTableView, QTreeWidget, QListWidget {{
@@ -179,6 +192,12 @@ QTableWidget, QTableView, QTreeWidget, QListWidget {{
 }}
 QTableWidget::item, QTreeWidget::item, QListWidget::item {{
     padding: 5px 8px; border: none;
+}}
+QTableWidget::item:focus, QTableView::item:focus, QTreeWidget::item:focus, QListWidget::item:focus {{
+    border: 2px solid {c['accent']};
+}}
+QTableWidget:focus, QTableView:focus, QTreeWidget:focus, QListWidget:focus {{
+    border: 1px solid {c['accent']};
 }}
 QTableWidget::item:selected, QTreeWidget::item:selected, QListWidget::item:selected {{
     background: {c['selected']}; color: {c['fg']};
@@ -200,7 +219,7 @@ QTabBar::tab {{
     padding: 8px 16px; border: none; border-bottom: 2px solid transparent;
     font-weight: 550;
 }}
-QTabBar::tab:selected {{ color: {c['accent']}; border-bottom: 2px solid {c['accent']}; }}
+QTabBar::tab:selected {{ color: {c['accent_text']}; border-bottom: 2px solid {c['accent']}; }}
 QTabBar::tab:hover:!selected {{ color: {c['fg']}; }}
 
 /* ---------- scrollbars ---------- */
@@ -245,6 +264,7 @@ QSplitter::handle:hover {{ background: {c['border']}; }}
     border-radius: 12px;
 }}
 #DropZone[hot="true"] {{ border-color: {c['accent']}; background: {c['hover']}; }}
+#DropZone:focus {{ border: 2px solid {c['accent']}; }}
 #DropTitle {{ font-size: 15px; font-weight: 600; background: transparent; }}
 #DropHint {{ color: {c['muted']}; font-size: 12px; background: transparent; }}
 

@@ -41,7 +41,7 @@ PALETTES: dict[str, list[str]] = {
     # One accent against a graded grey ramp, for figures where a single series is the
     # point and the rest are context. Every tone is distinct, so the greys stay tellable
     # apart even when six of them share a plot.
-    "focus": ["#0072B2", "#2F343B", "#4A5058", "#656C75",
+    "focus": ["#2E6FD9", "#2F343B", "#4A5058", "#656C75",
               "#828992", "#9EA5AD", "#B9BFC6", "#D4D9DE"],
 }
 

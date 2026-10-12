@@ -79,6 +79,10 @@ class MainWindow(QMainWindow):
 
         self._build_menu()
         self._build_shortcuts()
+        from .a11y import keyboard_friendly, label_inputs
+        for page in self.pages.values():
+            label_inputs(page)
+            keyboard_friendly(page)
         self.apply_theme(self.session.theme)
         self.go_to("home")
 
@@ -183,14 +187,19 @@ class MainWindow(QMainWindow):
         self.action_undo.setShortcut(QKeySequence.Undo)
         self.action_undo.triggered.connect(self.undo)
         self.action_redo = QAction("&Redo", self)
-        self.action_redo.setShortcut(QKeySequence.Redo)
+        redo_keys = list(QKeySequence.keyBindings(QKeySequence.Redo))
+        if QKeySequence("Ctrl+Y") not in redo_keys:
+            redo_keys.append(QKeySequence("Ctrl+Y"))
+        self.action_redo.setShortcuts(redo_keys)
         self.action_redo.triggered.connect(self.redo)
         edit_menu.addAction(self.action_undo)
         edit_menu.addAction(self.action_redo)
 
         view_menu = menu.addMenu("&View")
-        for key, cls, _group in PAGES:
+        for i, (key, cls, _group) in enumerate(PAGES, start=1):
             action = QAction(cls.title, self)
+            if i <= 9:
+                action.setShortcut(QKeySequence(f"Ctrl+{i}"))
             action.triggered.connect(lambda _c=False, k=key: self.go_to(k))
             view_menu.addAction(action)
         view_menu.addSeparator()
@@ -210,11 +219,7 @@ class MainWindow(QMainWindow):
     def _build_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+K"), self, self.show_palette)
         QShortcut(QKeySequence("Ctrl+P"), self, self.show_palette)
-        QShortcut(QKeySequence.Undo, self, self.undo)
-        QShortcut(QKeySequence.Redo, self, self.redo)
-        QShortcut(QKeySequence("Ctrl+Y"), self, self.redo)
-        for i, (key, _cls, _g) in enumerate(PAGES[:9], start=1):
-            QShortcut(QKeySequence(f"Ctrl+{i}"), self, lambda k=key: self.go_to(k))
+
 
     # -- navigation ----------------------------------------------------------
     def go_to(self, key: str) -> None:
@@ -409,7 +414,7 @@ def app_pixmap(size: int = 64) -> QPixmap:
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
     s = size / 64.0
-    painter.setBrush(QColor("#0072B2"))
+    painter.setBrush(QColor("#2E6FD9"))
     painter.setPen(Qt.NoPen)
     painter.drawRoundedRect(int(2 * s), int(2 * s), int(60 * s), int(60 * s), 14 * s, 14 * s)
     painter.setPen(QPen(QColor("#FFFFFF"), max(1.5, 5 * s), Qt.SolidLine,

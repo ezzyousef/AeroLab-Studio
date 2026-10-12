@@ -218,6 +218,13 @@ class MeasurePage(Page):
                 "The original dataset is no longer loaded — re-import it to change settings.",
                 "warning")
             return
+        bad = self._option_editor.invalid()
+        if bad:
+            label, text, editor = bad[0]
+            editor.setFocus()
+            editor.selectAll()
+            self.session.status.emit(f"“{text}” is not a number — correct {label} before re-running.", "error")
+            return
         options = self._option_editor.values()
         try:
             data, notes = M.prepare_data(run.measurement, dataset.columns, dataset.units, run.mapping)

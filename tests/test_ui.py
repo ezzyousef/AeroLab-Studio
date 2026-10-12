@@ -386,9 +386,13 @@ def test_text_on_coloured_backgrounds_meets_wcag_aa():
     for theme in ("light", "dark"):
         c = colours(theme)
         assert ratio(c["on_accent"], c["accent"]) >= 4.5, theme
-        for bg in ("bg", "raised"):
-            for fg in ("fg", "muted", "accent"):
+        for bg in ("bg", "raised", "surface", "field"):
+            for fg in ("fg", "muted", "accent_text"):
                 assert ratio(c[fg], c[bg]) >= 4.5, (theme, fg, bg)
+            # Outlines and focus rings are UI components: 3:1 (WCAG 1.4.11).
+            for ui in ("control", "accent"):
+                assert ratio(c[ui], c[bg]) >= 3.0, (theme, ui, bg)
+        assert ratio(c["rail_heading"], c["rail"]) >= 4.5, theme
 
 
 def test_mapping_table_keeps_only_the_current_pickers(qapp):
@@ -440,3 +444,42 @@ def test_origin_exports_reuse_one_thread(qapp, tmp_path, monkeypatch):
     assert any(tmp_path.rglob("*.ogs"))
     assert export.wait_for_export()
     window.close()
+
+
+def test_option_editor_reports_entries_that_are_not_numbers(qapp):
+    from aerolab.core.measurements import Option
+    from aerolab.ui.widgets import OptionEditor
+
+    opts = [Option("offset", "Offset", "float", 0.2), Option("window", "Window", "range", None)]
+    ed = OptionEditor(opts)
+    assert ed.invalid() == []
+    ed._editors["offset"][1].setText("0,2x")
+    ed._editors["window"][1].setText("1, 2")
+    bad = ed.invalid()
+    assert [(b[0], b[1]) for b in bad] == [("Offset", "0,2x")]
+
+
+def test_drop_zone_opens_the_file_dialog_from_the_keyboard(qapp):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from aerolab.ui.widgets import DropZone
+
+    zone = DropZone()
+    hits = []
+    zone.clicked.connect(lambda: hits.append(1))
+    zone.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Return, Qt.NoModifier))
+    assert hits == [1] and zone.focusPolicy() == Qt.StrongFocus
+
+
+def test_undo_shortcut_is_not_ambiguous_and_pages_show_their_keys(qapp):
+    from PySide6.QtGui import QKeySequence, QShortcut
+    from aerolab.ui.app import MainWindow
+
+    w = MainWindow()
+    keys = [s.key().toString() for s in w.findChildren(QShortcut)]
+    assert QKeySequence(QKeySequence.Undo).toString() not in keys    # owned by the Edit action only
+    assert w.action_undo.shortcut() == QKeySequence(QKeySequence.Undo)
+    assert any(s.toString() == "Ctrl+Y" for s in w.action_redo.shortcuts())
+    assert not any(t.tabKeyNavigation() for t in w.findChildren(type(w.findChild(__import__(
+        "PySide6.QtWidgets", fromlist=["QTableWidget"]).QTableWidget))))
+    w.close()

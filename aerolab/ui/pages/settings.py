@@ -45,8 +45,8 @@ class SettingsPage(Page):
         self.palette_combo.currentTextChanged.connect(self._palette_changed)
         appearance.body.addWidget(FieldRow(
             "Figure palette", self.palette_combo,
-            help_text="“publication” is the Okabe–Ito colourblind-safe set; it is also what "
-                      "is sent to Origin."))
+            help_text="“review” is the lab's house palette (Figure Studio's); “publication” is the "
+                      "Okabe–Ito colourblind-safe set. The selected palette is also sent to Origin."))
         self.swatch = PlotCanvas(toolbar=False)
         self.swatch.setMinimumHeight(150)
         self.swatch.setMaximumHeight(190)
