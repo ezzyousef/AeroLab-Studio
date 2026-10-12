@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1
+
+- **Analyse all and figure export no longer freeze the window:** a progress dialog shows each dataset/figure and has Cancel.
+- Analyse all stays on the Data page (on the first file that needs mapping) when some files were skipped, instead of jumping to Measure.
+- Figure export reports all failures in one message instead of one toast each.
+
 ## 1.2.0
 
 - **Figures in the lab's house style (Figure Studio's):** the "Review" palette and Figure Studio's Light/Dark colours, DejaVu Sans with bold axis titles and tick labels, an open frame, outward ticks, a horizontal grid only and a frameless legend — on screen and in every PNG/SVG/PDF export.

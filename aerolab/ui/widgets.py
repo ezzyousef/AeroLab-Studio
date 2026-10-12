@@ -294,6 +294,43 @@ class ToastHost(QWidget):
 
 
 # ---------------------------------------------------------------------------
+class StepProgress:
+    """A progress dialog for a loop that must stay on the GUI thread (it touches widgets):
+    the window repaints between steps and Cancel stops the loop.
+
+        progress = StepProgress(self, "Analysing", len(items))
+        for i, item in enumerate(items):
+            if not progress.step(i, f"Analysing {item}…"):
+                break
+        progress.done()
+    """
+
+    def __init__(self, parent, title: str, total: int):
+        from PySide6.QtWidgets import QProgressDialog
+        self.dialog = QProgressDialog(title, "Cancel", 0, max(1, total), parent)
+        self.dialog.setWindowTitle(title)
+        self.dialog.setWindowModality(Qt.WindowModal)
+        self.dialog.setMinimumDuration(300)            # quick jobs never flash a dialog
+        self.dialog.setAutoClose(True)
+        self.dialog.setValue(0)
+        self.cancelled = False
+
+    def step(self, index: int, label: str = "") -> bool:
+        """Report that step `index` starts; False once the user pressed Cancel."""
+        from PySide6.QtWidgets import QApplication
+        if label:
+            self.dialog.setLabelText(label)
+        self.dialog.setValue(index)
+        QApplication.processEvents()
+        self.cancelled = self.dialog.wasCanceled()
+        return not self.cancelled
+
+    def done(self) -> None:
+        self.dialog.setValue(self.dialog.maximum())
+        self.dialog.close()
+
+
+# ---------------------------------------------------------------------------
 class DropZone(QFrame):
     """Drag files here, or click to browse."""
 

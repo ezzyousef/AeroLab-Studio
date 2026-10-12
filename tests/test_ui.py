@@ -483,3 +483,18 @@ def test_undo_shortcut_is_not_ambiguous_and_pages_show_their_keys(qapp):
     assert not any(t.tabKeyNavigation() for t in w.findChildren(type(w.findChild(__import__(
         "PySide6.QtWidgets", fromlist=["QTableWidget"]).QTableWidget))))
     w.close()
+
+
+def test_step_progress_stops_on_cancel(qapp):
+    from aerolab.ui.widgets import StepProgress
+
+    progress = StepProgress(None, "Working", 5)
+    done = []
+    for i in range(5):
+        if i == 2:
+            progress.dialog.cancel()
+        if not progress.step(i, f"step {i}"):
+            break
+        done.append(i)
+    progress.done()
+    assert done == [0, 1] and progress.cancelled

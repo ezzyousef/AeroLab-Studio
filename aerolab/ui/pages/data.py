@@ -358,9 +358,14 @@ class DataPage(Page):
         self._run(ds, m, mapping)
 
     def analyse_all(self) -> None:
+        from ..widgets import StepProgress
         added = 0
         skipped: list[str] = []
-        for i, ds in enumerate(self.session.datasets):
+        datasets = list(self.session.datasets)
+        progress = StepProgress(self, "Analysing all datasets", len(datasets))
+        for i, ds in enumerate(datasets):
+            if not progress.step(i, f"Analysing {ds.name} ({i + 1} of {len(datasets)})…"):
+                break
             self.file_list.setCurrentRow(i)
             m = M.get(self.measure_combo.currentData())
             mapping = m.match_columns(ds.headers)
@@ -372,14 +377,22 @@ class DataPage(Page):
                 skipped.append(ds.name)
                 continue
             added += 1 if self._run(ds, m, mapping, quiet=True) else 0
-        level = "success" if added and not skipped else "warning"
-        text = f"Analysed {added} of {len(self.session.datasets)} dataset(s)"
+        progress.done()
+        level = "success" if added and not skipped and not progress.cancelled else "warning"
+        text = f"Analysed {added} of {len(datasets)} dataset(s)"
+        if progress.cancelled:
+            text += " (cancelled)"
         if skipped:
             text += (f"; {len(skipped)} need their columns checked by hand: "
                      + ", ".join(skipped[:4]) + (" …" if len(skipped) > 4 else ""))
         self.session.status.emit(text, level)
-        if added:
+        if added and not skipped and not progress.cancelled:
             self.analysed.emit()
+        elif skipped:
+            # Stay here, on the first file that still needs its columns mapped.
+            names = [d.name for d in self.session.datasets]
+            if skipped[0] in names:
+                self.file_list.setCurrentRow(names.index(skipped[0]))
 
     def _run(self, ds: Dataset, measurement, mapping: dict, quiet: bool = False) -> bool:
         try:

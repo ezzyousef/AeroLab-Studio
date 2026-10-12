@@ -8,7 +8,7 @@
 ;     pyinstaller AeroLabStudio.spec --noconfirm
 
 #define AppName        "AeroLab Studio"
-#define AppVersion     "1.2.0"
+#define AppVersion     "1.2.1"
 #define AppPublisher   "AeroLab Studio"
 #define AppExe         "AeroLabStudio.exe"
 #define SourceDir      "..\dist\AeroLabStudio"

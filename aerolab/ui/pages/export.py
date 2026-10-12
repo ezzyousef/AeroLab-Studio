@@ -353,20 +353,30 @@ class ExportPage(Page):
         suffix = self.img_format.currentText().lower().replace("tiff", "tif")
         size = self.img_size.currentText()
         dpi = self.img_dpi.currentText()
+        from ..widgets import StepProgress
         written = 0
-        for run in runs:
-            for plot in run.measurement.plots:
-                try:
-                    data = F.build_plot_data(plot, run.result, theme=self.session.theme,
-                                             palette_name=self.session.palette_name,
-                                             title=f"{run.sample} — {plot.title}")
-                    if data.is_empty:
-                        continue
-                    figure = F.render_figure(data, theme=self.session.theme, size=size)
-                    safe = "".join(c if c.isalnum() or c in "-_ ." else "_" for c in run.sample)
-                    F.save_figure(figure, Path(folder) / f"{safe}_{plot.id}.{suffix}", dpi=dpi)
-                    written += 1
-                except Exception as exc:                        # noqa: BLE001
-                    self.session.status.emit(f"{run.sample}/{plot.id}: {exc}", "error")
-        level = "success" if written else "warning"
-        self.session.status.emit(f"Wrote {written} figure(s) to {folder}", level)
+        errors: list[str] = []
+        jobs = [(run, plot) for run in runs for plot in run.measurement.plots]
+        progress = StepProgress(self, "Exporting figures", len(jobs))
+        for i, (run, plot) in enumerate(jobs):
+            if not progress.step(i, f"{run.sample} — {plot.title} ({i + 1} of {len(jobs)})"):
+                break
+            try:
+                data = F.build_plot_data(plot, run.result, theme=self.session.theme,
+                                         palette_name=self.session.palette_name,
+                                         title=f"{run.sample} — {plot.title}")
+                if data.is_empty:
+                    continue
+                figure = F.render_figure(data, theme=self.session.theme, size=size)
+                safe = "".join(c if c.isalnum() or c in "-_ ." else "_" for c in run.sample)
+                F.save_figure(figure, Path(folder) / f"{safe}_{plot.id}.{suffix}", dpi=dpi)
+                written += 1
+            except Exception as exc:                        # noqa: BLE001
+                errors.append(f"{run.sample}/{plot.id}: {exc}")
+        progress.done()
+        text = f"Wrote {written} figure(s) to {folder}" + (" (cancelled)" if progress.cancelled else "")
+        if errors:
+            # One message for every failure, instead of one toast each (only four fit).
+            text += f"; {len(errors)} failed: " + "; ".join(errors[:3]) + (" …" if len(errors) > 3 else "")
+        self.session.status.emit(text, "success" if written and not errors and not progress.cancelled
+                                 else "warning" if written else "error")
