@@ -203,9 +203,14 @@ def render_figure(data: PlotData, *, theme: str = "light", size: str = "screen",
             ax.set_xscale("log")
         if data.yscale == "log":
             ax.set_yscale("log")
-        ax.grid(True, which="major", color=t.grid, linewidth=0.7, alpha=0.9)
-        if data.xscale == "log" or data.yscale == "log":
-            ax.grid(True, which="minor", color=t.grid, linewidth=0.45, alpha=0.5)
+        # Figure Studio's house style: horizontal grid lines only, under the data.
+        ax.xaxis.grid(False)
+        ax.yaxis.grid(True, which="major", color=t.grid, linewidth=rc["grid.linewidth"])
+        if data.yscale == "log":
+            ax.yaxis.grid(True, which="minor", color=t.grid, linewidth=rc["grid.linewidth"] * 0.6,
+                          alpha=0.6)
+        for label in ax.get_xticklabels() + ax.get_yticklabels():
+            label.set_fontweight("bold")
 
         if legend and (len(data) > 1 or data.spans):
             if len(data) > _LEGEND_INSIDE_MAX:
@@ -217,9 +222,7 @@ def render_figure(data: PlotData, *, theme: str = "light", size: str = "screen",
                 # The metrics box is placed later into free[0]; keep the legend out of it.
                 leg = ax.legend(loc=free[1] if len(free) > 1 else "best",
                                 fontsize=rc["legend.fontsize"])
-            leg.get_frame().set_facecolor(t.background)
-            leg.get_frame().set_edgecolor(t.grid)
-            leg.get_frame().set_linewidth(0.8)
+            leg.set_frame_on(False)                     # frameless, as in Figure Studio
             for text in leg.get_texts():
                 text.set_color(t.foreground)
 
@@ -239,8 +242,8 @@ def _apply_axes_style(ax, rc: dict, theme: S.Theme) -> None:
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
     for side in ("left", "bottom"):
-        ax.spines[side].set_color(theme.foreground)
-        ax.spines[side].set_linewidth(1.0)
+        ax.spines[side].set_color(S.FRAME_COLOUR.get(theme.name, S.FRAME_COLOUR["light"]))
+        ax.spines[side].set_linewidth(rc["axes.linewidth"])
     ax.tick_params(colors=theme.foreground, which="both")
     ax.xaxis.label.set_color(theme.foreground)
     ax.yaxis.label.set_color(theme.foreground)

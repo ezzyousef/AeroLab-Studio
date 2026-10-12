@@ -22,7 +22,10 @@ __all__ = [
 # colour
 # ---------------------------------------------------------------------------
 PALETTES: dict[str, list[str]] = {
-    # Default: Okabe–Ito, the standard colourblind-safe eight, reordered so the first
+    # Default: Figure Studio's "Review" palette, the lab's house style, so every
+    # application's figures match the ones made in Figure Studio.
+    "review": ["#2E6FD9", "#17B6C4", "#1FA97B", "#F2A413", "#E04B4B", "#8C5CD6", "#5A6B7D"],
+    # Okabe–Ito, the standard colourblind-safe eight, reordered so the first
     # three are also the most distinct in greyscale.
     "publication": ["#0072B2", "#D55E00", "#009E73", "#CC79A7",
                     "#E69F00", "#56B4E9", "#7F3F98", "#333333"],
@@ -42,7 +45,7 @@ PALETTES: dict[str, list[str]] = {
               "#828992", "#9EA5AD", "#B9BFC6", "#D4D9DE"],
 }
 
-DEFAULT_PALETTE = "publication"
+DEFAULT_PALETTE = "review"
 
 # Fits and guides are drawn in the parent series' colour but thinner and dashed; when a
 # fit has no parent it falls back to these.
@@ -165,12 +168,17 @@ class Theme:
     palette: str = DEFAULT_PALETTE
 
 
+# Figure Studio's "Light" and "Dark" themes (paper / ink / muted / grid / frame). The light
+# muted grey is one step darker than Figure Studio's #6B7480 so muted text on the raised
+# panel colour passes WCAG AA (4.68:1 instead of 4.42:1).
 THEMES: dict[str, Theme] = {
-    "light": Theme("light", "#FFFFFF", "#F6F7F9", "#1B1F24", "#6A7280",
-                   "#DDE1E6", "#0072B2", "publication"),
-    "dark": Theme("dark", "#15181D", "#1E2228", "#E8EAED", "#9AA1AB",
-                  "#2C313A", "#3987E5", "vivid"),
+    "light": Theme("light", "#FFFFFF", "#F6F7F9", "#141A22", "#67707C",
+                   "#E8ECF1", "#2E6FD9", "review"),
+    "dark": Theme("dark", "#141A22", "#1C2430", "#F1F4F8", "#93A0B0",
+                  "#243040", "#2E6FD9", "review"),
 }
+# The axis frame is a little softer than the text, as in Figure Studio.
+FRAME_COLOUR = {"light": "#2A3340", "dark": "#8595A8"}
 
 FIGURE_SIZES: dict[str, tuple[float, float]] = {
     "single_column": (3.35, 2.6),      # 85 mm, the usual single-column width
@@ -205,22 +213,28 @@ def style_for(index: int, role: str = "data", *, palette_name: str | None = None
     symbol = SYMBOLS[source % len(SYMBOLS)]
     filled = (source // len(SYMBOLS)) % 2 == 0
 
+    # Line weights and symbol sizes follow Figure Studio's defaults, scaled to the screen figure.
     if role == "fit":
-        return SeriesStyle(colour, "none", "dash", 1.6, 0.0, False, label)
+        return SeriesStyle(colour, "none", "dash", 1.9, 0.0, False, label)
     if role == "guide":
         muted = FIT_COLOUR_DARK if theme == "dark" else FIT_COLOUR_LIGHT
-        return SeriesStyle(muted, "none", "dot", 1.2, 0.0, False, label)
+        return SeriesStyle(muted, "none", "dot", 1.3, 0.0, False, label)
 
     if style_hint == "line":
-        return SeriesStyle(colour, "none", "solid", 1.9, 0.0, True, label)
+        return SeriesStyle(colour, "none", "solid", 2.2, 0.0, True, label)
     if style_hint == "scatter+line":
-        return SeriesStyle(colour, symbol, "solid", 1.4, 5.4, filled, label)
-    return SeriesStyle(colour, symbol, "none", 0.0, 6.0, filled, label)
+        return SeriesStyle(colour, symbol, "solid", 1.8, 6.5, filled, label)
+    return SeriesStyle(colour, symbol, "none", 0.0, 7.0, filled, label)
 
 
 def apply_matplotlib_style(theme: str = "light", size: str = "screen") -> dict:
-    """rcParams for a figure that already looks like a journal figure."""
+    """rcParams for the lab's house style -- Figure Studio's: DejaVu Sans with bold axis
+    titles and tick labels, an open frame, outward ticks, a horizontal grid only and a
+    frameless legend. Sizes are Figure Studio's, scaled from its 9.8 in figure to this one."""
     t = THEMES.get(theme, THEMES["light"])
+    frame = FRAME_COLOUR.get(theme, FRAME_COLOUR["light"])
+    width = FIGURE_SIZES.get(size, FIGURE_SIZES["screen"])[0]
+    k = max(0.55, min(1.0, width / 9.8))
     return {
         "figure.figsize": FIGURE_SIZES.get(size, FIGURE_SIZES["screen"]),
         "figure.facecolor": t.background,
@@ -229,44 +243,47 @@ def apply_matplotlib_style(theme: str = "light", size: str = "screen") -> dict:
         "savefig.bbox": "tight",
         "savefig.pad_inches": 0.06,
         "axes.facecolor": t.background,
-        "axes.edgecolor": t.foreground,
+        "axes.edgecolor": frame,
         "axes.labelcolor": t.foreground,
         "axes.titlecolor": t.foreground,
-        "axes.linewidth": 1.0,
+        "axes.linewidth": round(1.6 * k, 2),
         "axes.grid": True,
+        "axes.grid.axis": "y",
         "axes.axisbelow": True,
-        "axes.titlesize": 11,
-        "axes.titleweight": "semibold",
+        "axes.titlesize": round(16.0 * k, 1),
+        "axes.titleweight": "bold",
         "axes.titlepad": 9,
-        "axes.labelsize": 10,
-        "axes.labelpad": 5,
+        "axes.labelsize": round(13.5 * k, 1),
+        "axes.labelweight": "bold",
+        "axes.labelpad": 7,
         "axes.spines.top": False,
         "axes.spines.right": False,
         "axes.prop_cycle": _cycler(palette(t.palette)),
         "grid.color": t.grid,
-        "grid.linewidth": 0.7,
-        "grid.alpha": 0.9,
+        "grid.linewidth": round(1.0 * k + 0.2, 2),
+        "grid.alpha": 1.0,
         "xtick.color": t.foreground,
         "ytick.color": t.foreground,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
+        "xtick.labelsize": round(11.5 * k, 1),
+        "ytick.labelsize": round(11.5 * k, 1),
         "xtick.direction": "out",
         "ytick.direction": "out",
-        "xtick.major.width": 1.0,
-        "ytick.major.width": 1.0,
-        "xtick.minor.visible": True,
-        "ytick.minor.visible": True,
-        "legend.frameon": True,
-        "legend.framealpha": 0.92,
+        "xtick.major.size": round(5.0 * k, 1),
+        "ytick.major.size": round(5.0 * k, 1),
+        "xtick.major.width": round(1.6 * k, 2),
+        "ytick.major.width": round(1.6 * k, 2),
+        "xtick.minor.visible": False,
+        "ytick.minor.visible": False,
+        "legend.frameon": False,
         "legend.facecolor": t.background,
         "legend.edgecolor": t.grid,
-        "legend.fontsize": 9,
+        "legend.fontsize": round(11.5 * k, 1),
         "legend.labelcolor": t.foreground,
         "legend.borderpad": 0.5,
         "text.color": t.foreground,
-        "font.size": 10,
+        "font.size": round(11.5 * k, 1),
         "font.family": "sans-serif",
-        "font.sans-serif": ["Segoe UI", "Arial", "Helvetica", "DejaVu Sans"],
+        "font.sans-serif": ["DejaVu Sans", "Arial", "Helvetica"],
         "mathtext.fontset": "dejavusans",
         "lines.solid_capstyle": "round",
     }

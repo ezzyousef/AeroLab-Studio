@@ -180,7 +180,7 @@ class Session(QObject):
     def _defaults() -> dict[str, Any]:
         return {
             "theme": "light",
-            "palette": "publication",
+            "palette": "review",
             "figure_size": "screen",
             "export_dpi": "print",
             "author": "",
@@ -190,6 +190,7 @@ class Session(QObject):
             "origin_keep_open": False,
             "auto_analyse": True,
             "decimals": 4,
+            "palette_v2": False,
         }
 
     def _load_settings(self) -> dict[str, Any]:
@@ -198,8 +199,13 @@ class Session(QObject):
             stored = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
             if isinstance(stored, dict):
                 values.update({k: v for k, v in stored.items() if k in values})
+                # 1.2: the house style moved to Figure Studio's "Review" palette. Settings saved
+                # with the old default move with it once; a palette chosen on purpose stays.
+                if not stored.get("palette_v2") and values.get("palette") == "publication":
+                    values["palette"] = "review"
         except (OSError, ValueError):
             pass
+        values["palette_v2"] = True
         self.author = values.get("author", "")
         return values
 
@@ -226,7 +232,7 @@ class Session(QObject):
 
     @property
     def palette_name(self) -> str:
-        return str(self.settings.get("palette", "publication"))
+        return str(self.settings.get("palette", "review"))
 
     # -- datasets ------------------------------------------------------------
     def add_datasets(self, datasets: list[Dataset]) -> None:
