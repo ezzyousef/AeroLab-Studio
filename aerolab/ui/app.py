@@ -212,6 +212,9 @@ class MainWindow(QMainWindow):
         about = QAction("&About AeroLab Studio", self)
         about.triggered.connect(lambda: self.go_to("about"))
         help_menu.addAction(about)
+        licence_action = QAction("&Licence…", self)
+        licence_action.triggered.connect(self.show_licence)
+        help_menu.addAction(licence_action)
         guide = QAction("&User guide", self)
         guide.triggered.connect(self.open_guide)
         help_menu.addAction(guide)
@@ -321,6 +324,7 @@ class MainWindow(QMainWindow):
             ("Clear all runs", "Session", self.session.clear_runs),
             ("Clear imported datasets", "Session", self.session.clear_datasets),
             ("About AeroLab Studio", "Help", self.show_about),
+            ("Licence…", "Help", self.show_licence),
         ]
         palette = CommandPalette(commands, self)
         palette.show_centred()
@@ -356,6 +360,14 @@ class MainWindow(QMainWindow):
             f"<p>{len(E.REGISTRY)} equations · {len(M.MEASUREMENTS)} measurements · "
             "OriginLab and Excel export.</p>"
             "<p>Built from Omranpour <i>et al.</i> (2024a, 2024b, 2025).</p>")
+
+    def show_licence(self):
+        """Edition, status and offline activation. Window-modal but non-blocking."""
+        from .licence_dialog import LicenceDialog
+        dialog = LicenceDialog(self)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.open()
+        return dialog
 
     def open_guide(self) -> None:
         from PySide6.QtGui import QDesktopServices

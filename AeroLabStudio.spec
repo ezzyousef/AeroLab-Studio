@@ -29,6 +29,10 @@ hiddenimports = [
     "scipy._lib.array_api_compat.numpy.fft",
     "xlsxwriter",
     "openpyxl",
+    # aerolab.vendor.licence imports cryptography inside verify(); listed explicitly so a
+    # build can never ship without the licence check's dependency.
+    "cryptography.exceptions",
+    "cryptography.hazmat.primitives.asymmetric.ed25519",
 ]
 # originpro is optional: include it when it is installed so the built app can drive Origin.
 try:
