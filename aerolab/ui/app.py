@@ -15,7 +15,7 @@ from .state import Session
 from . import theme as T
 from .pages import (AboutPage, CalculatorPage, DataPage, ExportPage, HomePage, MeasurePage,
                     PlotsPage, SettingsPage, ValidationPage, WorkspacePage, MechanicsPage,
-                    MaterialsPage)
+                    MaterialsPage, ExplorerPage)
 from .widgets import CommandPalette, ToastHost, icon_label
 
 __all__ = ["MainWindow", "run"]
@@ -29,6 +29,7 @@ PAGES = [
     ("plots", PlotsPage, "Analyse"),
     ("mechanics", MechanicsPage, "Analyse"),
     ("materials", MaterialsPage, "Analyse"),
+    ("explorer", ExplorerPage, "Analyse"),
     ("export", ExportPage, "Output"),
     ("validation", ValidationPage, "Output"),
     ("settings", SettingsPage, "Output"),
@@ -321,6 +322,9 @@ class MainWindow(QMainWindow):
             ("Save archive with attachments", "File", lambda: self._page_action("workspace", "save_archive")),
             ("Open archive", "File", lambda: self._page_action("workspace", "open_archive")),
             ("New sample", "Workspace", lambda: self._page_action("workspace", "new_sample")),
+            ("Write publishable report", "Output", lambda: self._page_action("explorer", "write_report")),
+            ("Verify an Excel export against the session", "Output",
+             lambda: self._page_action("explorer", "verify_excel")),
             ("Verify attached files", "Workspace", lambda: self._page_action("workspace", "verify_files")),
             ("Export to Excel", "Output", lambda: self._page_action("export", "export_excel")),
             ("Export to Origin", "Output", lambda: self._page_action("export", "export_origin")),
