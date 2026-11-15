@@ -250,7 +250,8 @@ class ExportPage(Page):
             validation=V.run_all() if self.chk_validation.isChecked() else [],
             theme=self.session.theme,
             manual=[{"name": c.name, "inputs": c.input_text(), "value": c.value,
-                     "unit": c.unit, "reference": c.reference, "uncertainty": c.uncertainty}
+                     "unit": c.unit, "reference": c.reference, "uncertainty": c.uncertainty,
+                     "method": c.uncertainty_method()}
                     for c in self.session.manual],
         )
         for run in runs:

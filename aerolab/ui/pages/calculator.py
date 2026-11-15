@@ -9,10 +9,12 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QPushButton, QSplitter, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QHBoxLayout,
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
+                               QSpinBox, QSplitter, QTableWidget, QVBoxLayout, QWidget)
 
 from ...core import equations as E
+from ...core import uncertainty as UQ
 from ...core.units import DIMENSIONS, convert, format_value, units_for
 from ..state import ManualCalc
 from ..widgets import Card, FieldRow, FormulaLabel, HLine, ResultTable, scrollable
@@ -30,6 +32,8 @@ class CalculatorPage(Page):
         super().__init__(session, parent)
         self._inputs: dict[str, tuple[QLineEdit, QComboBox, QLineEdit]] = {}
         self._equation: E.Equation | None = None
+        self._correlations: dict[str, float] = {}       # "a|b" -> r, for the current equation
+        self._mc: dict[str, float] = {}                 # last Monte Carlo summary
         self._build()
         self._populate_list()
         if self.eq_list.count():
@@ -109,6 +113,38 @@ class CalculatorPage(Page):
         self.note.setObjectName("Hint")
         self.note.setWordWrap(True)
         self.detail.body.addWidget(self.note)
+
+        unc_row = QHBoxLayout()
+        unc_row.setSpacing(8)
+        self.btn_corr = QPushButton("Correlations…")
+        self.btn_corr.setToolTip("Optional: correlation coefficients between inputs that have a ±. "
+                                 "Leave empty when the inputs were measured independently.")
+        self.btn_corr.clicked.connect(self.edit_correlations)
+        self.btn_mc = QPushButton("Monte Carlo check")
+        self.btn_mc.setToolTip("Draw the inputs from their distributions and push them through the exact "
+                               "equation, to see whether the first-order ± is trustworthy here.")
+        self.btn_mc.clicked.connect(self.run_monte_carlo)
+        self.mc_draws = QSpinBox()
+        self.mc_draws.setRange(1000, 200000)
+        self.mc_draws.setSingleStep(5000)
+        self.mc_draws.setValue(20000)
+        self.mc_draws.setSuffix(" draws")
+        self.mc_draws.setAccessibleName("Monte Carlo draws")
+        unc_row.addWidget(self.btn_corr)
+        unc_row.addWidget(self.btn_mc)
+        unc_row.addWidget(self.mc_draws)
+        unc_row.addStretch(1)
+        self.detail.body.addLayout(unc_row)
+        self.mc_note = QLabel()
+        self.mc_note.setObjectName("Hint")
+        self.mc_note.setWordWrap(True)
+        self.detail.body.addWidget(self.mc_note)
+        from ..widgets import PlotCanvas
+        self.mc_plot = PlotCanvas(toolbar=False)
+        self.mc_plot.setMinimumHeight(190)
+        self.mc_plot.setVisible(False)
+        self.mc_plot.setAccessibleName("Monte Carlo distribution of the result")
+        self.detail.body.addWidget(self.mc_plot)
         rl.addWidget(self.detail, 3)
 
         kept = Card("Kept results", "These are written to the Calculations sheet on export.")
@@ -156,6 +192,8 @@ class CalculatorPage(Page):
     # -- equation ------------------------------------------------------------
     def _show_equation(self, equation: E.Equation) -> None:
         self._equation = equation
+        self._correlations = {}
+        self._clear_mc()
         self.detail.set_title(equation.name)
         self.formula.set_formula(equation.latex, self.session.theme)
         bits = [equation.category]
@@ -267,7 +305,10 @@ class CalculatorPage(Page):
                                          - _convert(raw, unit, var))
 
         try:
-            if sigmas:
+            if sigmas and self._active_correlations(sigmas):
+                lin = UQ.propagate_linear(equation, values, sigmas, self._active_correlations(sigmas))
+                value, sigma = lin.value, lin.sigma
+            elif sigmas:
                 value, sigma = equation.compute_with_uncertainty(values, sigmas)
             else:
                 value, sigma = float(equation.compute(**values)), None
@@ -289,8 +330,16 @@ class CalculatorPage(Page):
             text += f"  ± {format_value(shown_sigma, 2)}"
         elif shown_sigma is not None:
             text += "  ± (uncertainty unavailable at this point)"
-        self._set_result(text, equation.notes)
+        corr = self._active_correlations(sigmas)
+        note = equation.notes
+        if corr:
+            note = (note + "  " if note else "") + "± includes the correlations you entered."
+        self._set_result(text, note)
+        if getattr(self, "_last", None) and self._last[2:] != (dict(values), sigma, dict(sigmas)):
+            self._clear_mc()                      # inputs changed: an old MC result no longer applies
         self._last = (value, equation.output.unit, dict(values), sigma, dict(sigmas))
+        self.btn_mc.setEnabled(bool(sigmas))
+        self.btn_corr.setEnabled(len(sigmas) >= 2)
 
     def _set_result(self, text: str | None, note: str = "") -> None:
         self.result_label.setText(text if text else "—")
@@ -304,7 +353,9 @@ class CalculatorPage(Page):
         value, unit, inputs, sigma, sigmas = self._last
         self.session.add_manual(ManualCalc(equation.id, equation.name, inputs, value, unit,
                                            equation.reference, uncertainty=sigma,
-                                           input_uncertainties=sigmas))
+                                           input_uncertainties=sigmas,
+                                           correlations=self._active_correlations(sigmas),
+                                           monte_carlo=dict(self._mc)))
         self.session.status.emit(f"Kept {equation.name}", "success")
 
     def _refresh_kept(self) -> None:
@@ -312,6 +363,108 @@ class CalculatorPage(Page):
                                "—" if c.uncertainty is None else c.uncertainty, c.unit)
                               for c in self.session.manual])
 
+
+    # -- correlated inputs and Monte Carlo --------------------------------------
+    def _active_correlations(self, sigmas: dict) -> dict[str, float]:
+        """Only pairs where both inputs currently carry a ±, and r is not zero."""
+        return {k: r for k, r in self._correlations.items()
+                if r and all(part in sigmas for part in k.split("|"))}
+
+    def edit_correlations(self) -> QDialog | None:
+        """A symmetric matrix of correlation coefficients between inputs with a ±."""
+        last = getattr(self, "_last", None)
+        if self._equation is None or not last or len(last[4]) < 2:
+            self.session.status.emit("Enter a ± for at least two inputs first.", "info")
+            return None
+        names = list(last[4])
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Input correlations")
+        layout = QVBoxLayout(dialog)
+        hint = QLabel("Pearson correlation between the errors of two inputs, from −1 to 1. Use it when "
+                      "two inputs share a calibration or one was derived from the other; leave 0 "
+                      "for independent measurements. Impossible combinations are refused.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        table = QTableWidget(len(names), len(names))
+        table.setHorizontalHeaderLabels(names)
+        table.setVerticalHeaderLabels(names)
+        table.setAccessibleName("Correlation matrix")
+        spins: dict[str, QDoubleSpinBox] = {}
+        for i, a in enumerate(names):
+            for j, b in enumerate(names):
+                if j <= i:
+                    label = QLabel("1" if i == j else "")
+                    label.setAlignment(Qt.AlignCenter)
+                    table.setCellWidget(i, j, label)
+                    continue
+                spin = QDoubleSpinBox()
+                spin.setRange(-1.0, 1.0)
+                spin.setDecimals(3)
+                spin.setSingleStep(0.05)
+                spin.setValue(self._correlations.get(f"{a}|{b}", self._correlations.get(f"{b}|{a}", 0.0)))
+                spin.setAccessibleName(f"correlation of {a} with {b}")
+                table.setCellWidget(i, j, spin)
+                spins[f"{a}|{b}"] = spin
+        layout.addWidget(table)
+        error = QLabel()
+        error.setObjectName("Hint")
+        error.setWordWrap(True)
+        layout.addWidget(error)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        layout.addWidget(buttons)
+
+        def accept():
+            pairs = {k: s.value() for k, s in spins.items()}
+            try:
+                UQ.check_correlation(UQ.correlation_matrix(names, pairs), names)
+            except ValueError as exc:
+                error.setText(str(exc))
+                return False
+            self._correlations = {k: v for k, v in pairs.items() if v}
+            dialog.accept()
+            self._recompute()
+            return True
+
+        buttons.accepted.connect(accept)
+        buttons.rejected.connect(dialog.reject)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.apply = accept                       # lets tests drive the dialog headlessly
+        dialog.spins = spins
+        dialog.error = error
+        dialog.open()
+        return dialog
+
+    def run_monte_carlo(self) -> None:
+        equation = self._equation
+        last = getattr(self, "_last", None)
+        if equation is None or not last or not last[4]:
+            self.session.status.emit("Enter a ± for at least one input first.", "info")
+            return
+        value, unit, values, sigma, sigmas = last
+        corr = self._active_correlations(sigmas)
+        try:
+            mc = UQ.monte_carlo(equation, values, sigmas, corr, n=int(self.mc_draws.value()), seed=0)
+            lin = UQ.propagate_linear(equation, values, sigmas, corr)
+        except Exception as exc:                            # noqa: BLE001 - shown to the user
+            self._clear_mc()
+            self.mc_note.setText(f"Monte Carlo could not run: {exc}")
+            return
+        verdict = UQ.compare(lin, mc)
+        self._mc = {"mean": mc.mean, "sd": mc.sd, "median": mc.median, "low": mc.low, "high": mc.high,
+                    "n": float(mc.n_used), "seed": float(mc.seed)}
+        self.mc_note.setText(verdict["message"] + "  " + UQ.ASSUMPTIONS)
+        from ...viz.figures import render_distribution
+        render_distribution(mc.samples, nominal=value, sigma=sigma, low=mc.low, high=mc.high,
+                            label=equation.output.label, unit=unit, theme=self.session.theme,
+                            figure=self.mc_plot.figure)
+        self.mc_plot.canvas.draw_idle()
+        self.mc_plot.setVisible(True)
+
+    def _clear_mc(self) -> None:
+        self._mc = {}
+        if hasattr(self, "mc_note"):
+            self.mc_note.setText("")
+            self.mc_plot.setVisible(False)
 
     def on_theme_changed(self, theme: str) -> None:
         if self._equation is not None:

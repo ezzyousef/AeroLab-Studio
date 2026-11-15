@@ -55,6 +55,8 @@ class ManualCalc:
     uncertainty: float | None = None
     created: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
     input_uncertainties: dict[str, float] = field(default_factory=dict)
+    correlations: dict[str, float] = field(default_factory=dict)     # "a|b" -> Pearson r
+    monte_carlo: dict[str, float] = field(default_factory=dict)      # mean, sd, low, high, n, seed
 
     def input_text(self) -> str:
         def one(k, v):
@@ -62,7 +64,22 @@ class ManualCalc:
             if k in self.input_uncertainties:
                 s += f" ± {_fmt(self.input_uncertainties[k])}"
             return s
-        return ", ".join(one(k, v) for k, v in self.inputs.items())
+        text = ", ".join(one(k, v) for k, v in self.inputs.items())
+        if self.correlations:
+            text += "; " + ", ".join(f"r({k.replace('|', ',')})={r:g}" for k, r in self.correlations.items())
+        return text
+
+    def uncertainty_method(self) -> str:
+        """How the ± was obtained, for the export: method, correlations and any MC check."""
+        if self.uncertainty is None:
+            return "no uncertainty entered"
+        text = "first-order, correlated inputs" if self.correlations else "first-order, independent inputs"
+        mc = self.monte_carlo
+        if mc:
+            text += (f"; Monte Carlo mean {mc.get('mean', float('nan')):.5g}, SD {mc.get('sd', float('nan')):.3g}, "
+                     f"95 % {mc.get('low', float('nan')):.5g} – {mc.get('high', float('nan')):.5g} "
+                     f"({int(mc.get('n', 0))} draws, seed {int(mc.get('seed', 0))})")
+        return text
 
 
 @dataclass(frozen=True)
@@ -341,6 +358,8 @@ class Session(QObject):
                  "value": _jsonable(c.value), "inputs": {k: _jsonable(v) for k, v in c.inputs.items()},
                  "uncertainty": _jsonable(c.uncertainty),
                  "input_uncertainties": {k: _jsonable(v) for k, v in c.input_uncertainties.items()},
+                 "correlations": {k: _jsonable(v) for k, v in c.correlations.items()},
+                 "monte_carlo": {k: _jsonable(v) for k, v in c.monte_carlo.items()},
                  "reference": c.reference}
                 for c in self.manual
             ],
@@ -390,7 +409,9 @@ class Session(QObject):
                 _float(entry.get("value")), entry.get("unit", ""), entry.get("reference", ""),
                 uncertainty=None if sigma is None else _float(sigma),
                 input_uncertainties={k: _float(v) for k, v in
-                                     entry.get("input_uncertainties", {}).items()}))
+                                     entry.get("input_uncertainties", {}).items()},
+                correlations={k: _float(v) for k, v in entry.get("correlations", {}).items()},
+                monte_carlo={k: _float(v) for k, v in entry.get("monte_carlo", {}).items()}))
         self._record(f"open session “{p.stem}”")
         self.manual_changed.emit()
 
