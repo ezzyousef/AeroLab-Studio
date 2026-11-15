@@ -849,7 +849,12 @@ def analyze_sorption_bet(p_p0: Sequence[float], volume_stp: Sequence[float], *,
         ok = np.isfinite(x_raw) & np.isfinite(v_raw)
         xr, vr = x_raw[ok], v_raw[ok]
         i_top = int(np.argmax(xr))
-        if i_top < xr.size - 1 and np.any(np.diff(xr[i_top:]) < 0):
+        if i_top == 0 and np.all(np.diff(xr) <= 0):
+            # Monotonically falling pressure from the first point is one branch listed
+            # high-to-low (some exports do), not adsorption followed by desorption. It used
+            # to be cut down to its first point and refused as "need at least 3 points".
+            branch_note = "points listed high-to-low; sorted by pressure"
+        elif i_top < xr.size - 1 and np.any(np.diff(xr[i_top:]) < 0):
             branch_note = f"desorption branch ({xr.size - i_top - 1} points) ignored"
             xr, vr = xr[:i_top + 1], vr[:i_top + 1]
         x_raw, v_raw = xr, vr
@@ -988,7 +993,10 @@ def find_moduli_crossover(x: Sequence[float], g_storage: Sequence[float],
     ratio = np.log10(gp) - np.log10(gpp)
     cross_log = _interp_crossing(np.log10(xa), ratio, 0.0)
     crossover = float(10.0 ** cross_log) if cross_log is not None else float("nan")
-    g_at_cross = float(np.interp(crossover, xa, gp)) if math.isfinite(crossover) else float("nan")
+    # The crossover is located in log-log space, so read the modulus there too: linear
+    # interpolation between two points a decade apart overstated it by ~0.3 % on a sweep.
+    g_at_cross = (float(10.0 ** np.interp(cross_log, np.log10(xa), np.log10(gp)))
+                  if math.isfinite(crossover) else float("nan"))
     plateau = float(np.median(gp[: max(3, xa.size // 5)]))
 
     metrics = [

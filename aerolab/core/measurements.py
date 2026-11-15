@@ -37,6 +37,9 @@ class Channel:
     aliases: tuple[str, ...] = ()  # extra header spellings seen in instrument exports
     required: bool = True
     help: str = ""
+    # Other quantities this column may legitimately hold (an amplitude sweep's x can be a
+    # stress, a strain or a frequency). Values in one of these are used as they are.
+    alt_dimensions: tuple[str, ...] = ()
 
     def matches(self, header: str) -> float:
         """0-1 score for how well a file header names this channel."""
@@ -253,6 +256,11 @@ def prepare_data(measurement: Measurement, columns: Sequence[Sequence[float]],
             notes.append(f"{ch.label}: converted {raw} → {ch.unit}")
             continue
         other = U.dimension_of(file_unit) if file_unit else None
+        if other is not None and other in ch.alt_dimensions:
+            data[ch.key] = values
+            notes.append(f"{ch.label}: column is in {raw} ({other.replace('_', ' ')}), used as is — "
+                         "set the X-axis name and unit in Settings to match")
+            continue
         if other is not None and other != ch.dimension and ch.unit in table:
             raise ValueError(
                 f"{ch.label} needs {ch.unit}, but the mapped column is in {raw} "
@@ -316,8 +324,8 @@ def guessed_channels(measurement: Measurement, headers: Sequence[str],
 # ---------------------------------------------------------------------------
 # the registry
 # ---------------------------------------------------------------------------
-def _ch(key, label, unit, dim, *aliases, required=True, help="") -> Channel:
-    return Channel(key, label, unit, dim, tuple(aliases), required, help)
+def _ch(key, label, unit, dim, *aliases, required=True, help="", alt=()) -> Channel:
+    return Channel(key, label, unit, dim, tuple(aliases), required, help, tuple(alt))
 
 
 MEASUREMENTS: tuple[Measurement, ...] = (
@@ -623,7 +631,8 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         summary="Plateau storage modulus and the G′ = G″ crossover that marks the flow point.",
         channels=(
             _ch("x", "Oscillation stress", "Pa", "pressure",
-                "shear stress", "strain", "angular frequency", "γ", "ω"),
+                "shear stress", "strain", "angular frequency", "γ", "ω",
+                alt=("dimensionless", "frequency")),
             _ch("g_storage", "Storage modulus G′", "Pa", "modulus", "G'", "Gp", "elastic modulus"),
             _ch("g_loss", "Loss modulus G″", "Pa", "modulus", "G''", "Gpp", "viscous modulus"),
         ),

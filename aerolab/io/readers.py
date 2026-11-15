@@ -34,6 +34,11 @@ SUPPORTED_SUFFIXES = {
 }
 
 _COMMENT_CHARS = ("#", "!", ";", "%", "//")
+# Refuse files bigger than this before reading them: a lab export is kilobytes to tens of
+# megabytes, and reading a stray multi-gigabyte file would freeze the window.
+MAX_FILE_BYTES = 256 * 1024 * 1024
+_BOMS = ((b"\x00\x00\xfe\xff", "utf-32-be"), (b"\xff\xfe\x00\x00", "utf-32-le"),
+         (b"\xef\xbb\xbf", "utf-8-sig"), (b"\xfe\xff", "utf-16-be"), (b"\xff\xfe", "utf-16-le"))
 _NUM_RE = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eEdD][+-]?\d+)?$")
 _UNIT_ROW_RE = re.compile(r"^[\s\(\[]?[A-Za-zµΩ°%/·^\-\d\.\s\)\]\*]{0,24}$")
 
@@ -123,6 +128,10 @@ def read_any(path: str | Path, **kwargs: Any) -> list[Dataset]:
     p = Path(path)
     if not p.exists():
         raise ImportError_(f"File not found: {p}")
+    size = p.stat().st_size
+    if size > MAX_FILE_BYTES:
+        raise ImportError_(f"{p.name} is too large to import ({size / 1e6:.0f} MB; the limit is "
+                           f"{MAX_FILE_BYTES / 1e6:.0f} MB). Split it or export only the columns you need.")
     kind = SUPPORTED_SUFFIXES.get(p.suffix.lower())
     if kind is None:
         kind = "excel" if p.suffix.lower().startswith(".xls") else "delimited"
@@ -166,6 +175,19 @@ def read_delimited(path: str | Path, encoding: str | None = None, **kwargs: Any)
 def _decode(raw: bytes, encoding: str | None) -> str:
     if encoding:
         return raw.decode(encoding, errors="replace")
+    # A byte-order mark names the encoding outright. Without this, UTF-16 exports (common
+    # from Windows instrument software) "decoded" as cp1252 into text full of NUL characters.
+    for bom, enc in _BOMS:
+        if raw.startswith(bom):
+            return raw[len(bom):].decode(enc, errors="replace")
+    if b"\x00" in raw[:4096]:
+        # UTF-16 without a BOM: every other byte of ASCII text is zero.
+        head = raw[:4096]
+        if head[1::2].count(0) > 0.4 * len(head[1::2]):
+            return raw.decode("utf-16-le", errors="replace")
+        if head[0::2].count(0) > 0.4 * len(head[0::2]):
+            return raw.decode("utf-16-be", errors="replace")
+        raise ImportError_("the file contains binary data (NUL bytes) — it is not a text table")
     for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
         try:
             return raw.decode(enc)
@@ -201,9 +223,11 @@ def _parse_delimited(lines: Sequence[str], name: str, source: str, *,
     delimiter = delimiter or _sniff_delimiter(body)
     rows = _split_rows(body, delimiter)
     rows = [r for r in rows if any(cell.strip() for cell in r)]
+    rows = _drop_empty_trailing_fields(rows)
     width = _modal_width(rows)
     if delimiter == "whitespace" and rows and len(rows[0]) > width:
         rows[0] = _rejoin_units(rows[0], width)
+    warnings = _shape_warnings(rows, width)
     rows = [(r + [""] * width)[:width] for r in rows]
 
     decimal = decimal or _sniff_decimal(rows, delimiter)
@@ -239,6 +263,8 @@ def _parse_delimited(lines: Sequence[str], name: str, source: str, *,
 
     columns, text_columns = _to_columns(data_rows, headers, decimal)
     meta = {"delimiter": delimiter, "decimal": decimal, "rows": len(data_rows)}
+    if warnings:
+        meta["warnings"] = warnings
     if preamble:
         meta["preamble"] = preamble[:40]
     return Dataset(name=name, headers=headers, columns=columns, units=units,
@@ -290,6 +316,45 @@ def _table_start(body: Sequence[str], delimiter: str | None) -> int:
     if top == data and body[data - 1].strip() and _numberish(body[data - 1]) < 2:
         top = data - 1
     return top
+
+
+def _drop_empty_trailing_fields(rows: list[list[str]]) -> list[list[str]]:
+    """Strip trailing fields that are empty on *every* row ("a,b," exports).
+
+    Only a column that is blank everywhere is removed; one blank cell in a column that
+    holds data elsewhere stays, so nothing shifts.
+    """
+    if not rows:
+        return rows
+    longest = max(len(r) for r in rows)
+    keep = longest
+    while keep > 1 and all(len(r) < keep or not r[keep - 1].strip() for r in rows):
+        keep -= 1
+    return [r[:keep] for r in rows] if keep < longest else rows
+
+
+def _shape_warnings(rows: Sequence[Sequence[str]], width: int, limit: int = 8) -> list[str]:
+    """Record-level check: every row that does not have `width` fields, reported by line.
+
+    The table keeps the modal width (extra fields are dropped, short rows padded with
+    blanks), but the user is told which rows did not fit instead of losing values quietly.
+    """
+    out: list[str] = []
+    header_n = len(rows[0]) if rows else width
+    if rows and header_n < width:
+        out.append(f"the header has {header_n} fields but the data rows have {width}; "
+                   f"the extra column(s) were named \"Column N\"")
+    wide = [(i, len(r)) for i, r in enumerate(rows[1:], start=2) if len(r) > width]
+    short = [(i, len(r)) for i, r in enumerate(rows[1:], start=2) if 0 < len(r) < width]
+    for i, n in wide[:limit]:
+        out.append(f"table row {i} has {n} fields, the table has {width}: the extra field(s) were dropped")
+    if len(wide) > limit:
+        out.append(f"… and {len(wide) - limit} more row(s) wider than the table")
+    if short:
+        lines = ", ".join(str(i) for i, _n in short[:limit])
+        more = f" and {len(short) - limit} more" if len(short) > limit else ""
+        out.append(f"table row(s) {lines}{more} have fewer than {width} fields: missing values read as NaN")
+    return out
 
 
 def _rejoin_units(tokens: Sequence[str], width: int) -> list[str]:
@@ -518,11 +583,13 @@ def _parse_grid(grid: Sequence[Sequence[str]], name: str, source: str, **kwargs:
 def read_json(path: str | Path, **_kwargs: Any) -> list[Dataset]:
     """Accepts a list of records, a dict of columns, or an AeroLab export."""
     p = Path(path)
-    payload = json.loads(p.read_text(encoding="utf-8"))
+    payload = json.loads(_decode(p.read_bytes(), None))
 
     if isinstance(payload, dict) and isinstance(payload.get("datasets"), list):
         out = []
         for i, block in enumerate(payload["datasets"]):
+            if not isinstance(block, dict):
+                raise ImportError_(f"{p.name}: dataset {i + 1} is not an object")
             out.append(_dataset_from_mapping(block.get("columns", block),
                                              block.get("name", f"{p.stem} {i + 1}"), str(p),
                                              block.get("units")))

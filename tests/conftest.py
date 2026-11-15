@@ -30,6 +30,39 @@ def qapp():
     yield app
 
 
+@pytest.fixture(autouse=True)
+def _isolated_settings(tmp_path, monkeypatch):
+    """Tests must never read or overwrite the user's real ~/.aerolab_studio/settings.json."""
+    try:
+        import aerolab.ui.state as state
+    except ImportError:                       # Qt not installed: core tests still run
+        yield
+        return
+    monkeypatch.setattr(state, "SETTINGS_PATH", tmp_path / "settings" / "settings.json")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _delete_windows_after_each_test():
+    """Close and delete every top-level window a test leaves behind.
+
+    Closed-but-alive MainWindows keep their pages, plots and session signal connections,
+    so each later test's setup got slower (the FTIR toolkit review measured this).
+    """
+    yield
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is None:
+        return
+    for widget in app.topLevelWidgets():
+        if widget.isVisible():
+            widget.close()
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    app.processEvents()
+
+
 @pytest.fixture
 def analysed(samples_dir):
     """Every demo dataset, imported and analysed. Returns {measurement id: AnalysisResult}."""
