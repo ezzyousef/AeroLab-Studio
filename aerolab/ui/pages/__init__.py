@@ -10,7 +10,8 @@ from .validation import ValidationPage
 from .settings import SettingsPage
 from .about import AboutPage
 from .workspace import WorkspacePage
+from .mechanics import MechanicsPage
 
 __all__ = ["Page", "HomePage", "CalculatorPage", "DataPage", "MeasurePage", "PlotsPage",
            "ExportPage", "ValidationPage", "SettingsPage", "AboutPage",
-           "WorkspacePage"]
+           "WorkspacePage", "MechanicsPage"]

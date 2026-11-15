@@ -14,6 +14,7 @@ from typing import Any, Callable, Sequence
 import numpy as np
 
 from . import curves as C
+from . import mechanics as MX
 from . import units as U
 from .curves import AnalysisResult
 
@@ -473,6 +474,65 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         reference="Gibson & Ashby (1997); Omranpour et al. (2025), §3.5",
         sample="density_scaling.csv",
         tags=("Gibson-Ashby", "scaling", "density"),
+    ),
+
+    Measurement(
+        id="stress_relaxation",
+        name="Stress relaxation",
+        category="Mechanical",
+        summary="Maxwell, standard linear solid, two-term Prony and power-law relaxation fitted to a "
+                "strain-step test and compared by AIC. Linear viscoelastic, within the tested window only.",
+        channels=(
+            _ch("time_s", "Time", "s", "time", "t", "time (s)", "elapsed time", "step time"),
+            _ch("stress_mpa", "Stress", "MPa", "stress", "relaxation stress", "σ", "stress (MPa)"),
+        ),
+        options=(
+            Option("strain_pct", "Strain step", "float", None,
+                   "If given, the stress is divided by the step strain and the relaxation modulus E(t) is fitted.",
+                   minimum=0.0, maximum=1000.0, unit="%"),
+            Option("model", "Model", "choice", "auto", "auto fits every model and keeps the lowest AIC.",
+                   choices=("auto", "Maxwell", "Standard linear solid", "Prony (2 terms)", "Power law (Nutting)")),
+        ),
+        plots=(
+            Plot("relaxation", "Stress relaxation", "Time", "s", "Response", "MPa",
+                 (Series("data", "Measured", "scatter", "data"),
+                  Series("fit", "Best model (lowest AIC)", "line", "fit"),
+                  Series("runner-up fit", "Runner-up model", "line", "fit")),
+                 note="Fits are drawn over the measured window only."),
+        ),
+        analyser=MX.analyze_relaxation,
+        reference="Linear viscoelasticity (Ferry 1980; Findley, Lai & Onaran 1976)",
+        sample="relaxation_synthetic.csv",
+        tags=("viscoelastic", "relaxation", "Prony", "Maxwell"),
+    ),
+    Measurement(
+        id="creep",
+        name="Creep",
+        category="Mechanical",
+        summary="Kelvin–Voigt, standard linear solid, Burgers and Findley power-law creep fitted to a "
+                "constant-load test and compared by AIC. Linear viscoelastic, within the tested window only.",
+        channels=(
+            _ch("time_s", "Time", "s", "time", "t", "time (s)", "elapsed time", "creep time"),
+            _ch("strain_pct", "Strain", "%", "dimensionless", "creep strain", "ε", "strain (%)"),
+        ),
+        options=(
+            Option("stress_mpa", "Applied stress", "float", None,
+                   "If given, the strain is divided by the stress and the creep compliance J(t) is fitted.",
+                   minimum=0.0, unit="MPa"),
+            Option("model", "Model", "choice", "auto", "auto fits every model and keeps the lowest AIC.",
+                   choices=("auto", "Kelvin–Voigt", "Standard linear solid", "Burgers", "Findley power law")),
+        ),
+        plots=(
+            Plot("creep", "Creep", "Time", "s", "Response", "%",
+                 (Series("data", "Measured", "scatter", "data"),
+                  Series("fit", "Best model (lowest AIC)", "line", "fit"),
+                  Series("runner-up fit", "Runner-up model", "line", "fit")),
+                 note="Fits are drawn over the measured window only."),
+        ),
+        analyser=MX.analyze_creep,
+        reference="Linear viscoelasticity (Findley, Lai & Onaran 1976)",
+        sample="creep_synthetic.csv",
+        tags=("viscoelastic", "creep", "Burgers", "Findley"),
     ),
 
     # ------------------------------------------------------------ thermal
