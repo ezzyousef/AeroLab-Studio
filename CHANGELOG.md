@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0: Codex review fixes
+
+- **Importer:** every record is now validated, the first included. A row with more values than the header (or than the other rows, when there is no header) refuses the file and names its line numbers. Before, such rows were cut into the analysis. Empty trailing fields are still dropped, and short rows are kept as NaN. Excel sheets follow the same rule.
+- **Compressed files:** NPZ and XLSX files are checked for their expanded size and for the number of values or cells before they are loaded.
+- **Archive import:** every candidate file name is checked for containment, links and SHA-256, and files are created exclusively.
+- **Monte Carlo:** draws outside physical bounds (a negative density, below absolute zero) or the equation's relations (for example ρb ≤ ρs) are rejected. Impossible nominal values are refused. The comparison reports "unavailable" or "disagree" when the linear σ is NaN or zero, instead of "agree".
+- **BET:** a file whose pressure only falls needs an explicit branch (adsorption or desorption), and the choice is saved with the run.
+- **Runs:** each run has a persistent unique id, used for workspace links. Older links move to it only when this is unambiguous.
+
 ## 1.3.0 (upgrade 06)
 
 **Scientific correctness**

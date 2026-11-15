@@ -37,6 +37,10 @@ _COMMENT_CHARS = ("#", "!", ";", "%", "//")
 # Refuse files bigger than this before reading them: a lab export is kilobytes to tens of
 # megabytes, and reading a stray multi-gigabyte file would freeze the window.
 MAX_FILE_BYTES = 256 * 1024 * 1024
+# Compressed formats (.npz, .xlsx) can expand far beyond their file size, so the expanded
+# size and the number of values are budgeted too, checked before anything is loaded.
+MAX_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024
+MAX_VALUES = 50_000_000                      # numbers in an NPZ, cells in a workbook
 _BOMS = ((b"\x00\x00\xfe\xff", "utf-32-be"), (b"\xff\xfe\x00\x00", "utf-32-le"),
          (b"\xef\xbb\xbf", "utf-8-sig"), (b"\xfe\xff", "utf-16-be"), (b"\xff\xfe", "utf-16-le"))
 _NUM_RE = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eEdD][+-]?\d+)?$")
@@ -203,13 +207,15 @@ def _parse_delimited(lines: Sequence[str], name: str, source: str, *,
     lines = [ln.rstrip("\r\n") for ln in lines][skip_rows:]
     preamble: list[str] = []
     body: list[str] = []
-    for line in lines:
+    body_lines: list[int] = []                # 1-based line number in the file of each body line
+    for number, line in enumerate(lines, start=skip_rows + 1):
         stripped = line.strip()
         if not body and (not stripped or stripped.startswith(_COMMENT_CHARS)):
             if stripped:
                 preamble.append(stripped.lstrip("#!;%/ "))
             continue
         body.append(line)
+        body_lines.append(number)
     if not body:
         raise ImportError_(f"{name}: no data rows found")
 
@@ -218,17 +224,17 @@ def _parse_delimited(lines: Sequence[str], name: str, source: str, *,
         # comment character. Drop everything before the header of the main numeric block.
         start = _table_start(body, delimiter)
         preamble += [ln.strip() for ln in body[:start] if ln.strip()]
-        body = body[start:]
+        body, body_lines = body[start:], body_lines[start:]
 
     delimiter = delimiter or _sniff_delimiter(body)
-    rows = _split_rows(body, delimiter)
-    rows = [r for r in rows if any(cell.strip() for cell in r)]
-    rows = _drop_empty_trailing_fields(rows)
-    width = _modal_width(rows)
-    if delimiter == "whitespace" and rows and len(rows[0]) > width:
-        rows[0] = _rejoin_units(rows[0], width)
-    warnings = _shape_warnings(rows, width)
-    rows = [(r + [""] * width)[:width] for r in rows]
+    numbered = _split_rows_numbered(body, body_lines, delimiter)
+    numbered = [(n, _strip_trailing_empty(r)) for n, r in numbered if any(cell.strip() for cell in r)]
+    if not numbered:
+        raise ImportError_(f"{name}: no data rows found")
+    rows = [r for _n, r in numbered]
+    modal = _modal_width(rows)
+    if delimiter == "whitespace" and len(rows[0]) > modal:
+        rows[0] = _rejoin_units(rows[0], modal)
 
     decimal = decimal or _sniff_decimal(rows, delimiter)
 
@@ -236,6 +242,25 @@ def _parse_delimited(lines: Sequence[str], name: str, source: str, *,
     # looks like units (short, bracketed, no words) is the units row — Origin's own layout.
     if header_row is None:
         header_row = 0 if not _row_is_numeric(rows[0], decimal) else None
+    # Record-level validation of EVERY row, the first included. The header fixes the table
+    # width; without one, the most common width does. A record with more values than that
+    # is refused with its line number: truncating it would silently drop or shift a value
+    # into the analysis (supercap_suite / FTIR / brookfield use the same rule). Only empty
+    # trailing fields were removed above. Shorter records are kept, padded with NaN.
+    width = len(rows[header_row]) if header_row is not None else modal
+    wide = [(numbered[i][0], len(r)) for i, r in enumerate(rows) if len(r) > width]
+    if wide:
+        line, count = wide[0]
+        basis = "the header has" if header_row is not None else "the other rows have"
+        raise ImportError_(f"{name}: line {line} has {count} values but {basis} {width} "
+                           f"({len(wide)} such line(s): {', '.join(str(n) for n, _c in wide[:10])}"
+                           f"{' …' if len(wide) > 10 else ''}). Fix or remove those lines, then import again.")
+    short = [numbered[i][0] for i, r in enumerate(rows) if 0 < len(r) < width and i != header_row]
+    warnings = []
+    if short:
+        warnings.append(f"line(s) {', '.join(str(n) for n in short[:8])}{' …' if len(short) > 8 else ''} "
+                        f"have fewer than {width} values: the missing values read as NaN")
+    rows = [(r + [""] * width)[:width] for r in rows]
     if units_row is None and header_row is not None and len(rows) > header_row + 1:
         candidate = rows[header_row + 1]
         if not _row_is_numeric(candidate, decimal) and _looks_like_units(candidate):
@@ -316,6 +341,27 @@ def _table_start(body: Sequence[str], delimiter: str | None) -> int:
     if top == data and body[data - 1].strip() and _numberish(body[data - 1]) < 2:
         top = data - 1
     return top
+
+
+def _strip_trailing_empty(row: list[str]) -> list[str]:
+    """Drop empty trailing fields of one record ("0,1," -> ["0", "1"]); they are not data."""
+    row = list(row)
+    while len(row) > 1 and not row[-1].strip():
+        row.pop()
+    return row
+
+
+def _split_rows_numbered(body: Sequence[str], numbers: Sequence[int], delimiter: str) -> list[tuple[int, list[str]]]:
+    """Rows with the file line number each one starts on (quoted fields may span lines)."""
+    if delimiter == "whitespace":
+        return [(n, re.split(r"\s+", ln.strip())) for n, ln in zip(numbers, body)]
+    reader = csv.reader(io.StringIO("\n".join(body)), delimiter=delimiter, skipinitialspace=True)
+    out = []
+    start = 0
+    for row in reader:
+        out.append((numbers[min(start, len(numbers) - 1)], list(row)))
+        start = reader.line_num
+    return out
 
 
 def _drop_empty_trailing_fields(rows: list[list[str]]) -> list[list[str]]:
@@ -538,6 +584,7 @@ def read_excel(path: str | Path, sheet: str | int | None = None, **kwargs: Any) 
     if p.suffix.lower() == ".xls":
         raise ImportError_(f"{p.name}: the old binary .xls format cannot be read. Open it in "
                            "Excel or LibreOffice and save it as .xlsx (or .csv), then import that.")
+    _check_zip_budget(p)
     wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
     try:
         if sheet is None:
@@ -551,16 +598,24 @@ def read_excel(path: str | Path, sheet: str | int | None = None, **kwargs: Any) 
             ws = wb[sheet_name]
             if not hasattr(ws, "iter_rows"):              # a chartsheet holds no cells
                 continue
-            grid = [[_excel_cell(c) for c in row] for row in ws.iter_rows(values_only=True)]
+            grid, cells = [], 0
+            for row in ws.iter_rows(values_only=True):
+                cells += len(row)
+                if cells > MAX_VALUES:
+                    raise ImportError_(f"{p.name}: sheet {sheet_name!r} has more than {MAX_VALUES:,} cells; "
+                                       "export only the columns you need")
+                grid.append([_excel_cell(c) for c in row])
             grid = [r for r in grid if any(str(c).strip() for c in r)]
             if len(grid) < 2:
                 continue
-            width = _modal_width(grid)
-            grid = [(r + [""] * width)[:width] for r in grid]
+            # No padding or truncation here: the delimited parser validates every record
+            # and refuses rows wider than the table instead of cutting them.
             try:
                 ds = _parse_grid(grid, name=f"{p.stem} · {sheet_name}", source=str(p),
                                  **{"decimal": ".", **kwargs})
-            except ImportError_:
+            except ImportError_ as exc:
+                if " values but " in str(exc):
+                    raise
                 continue
             ds.meta["sheet"] = sheet_name
             out.append(ds)
@@ -636,8 +691,43 @@ def _coerce(value: Any) -> float:
     return _to_float(str(value), ".")
 
 
+def _check_zip_budget(p: Path) -> None:
+    """Refuse a zip container whose members would expand past MAX_UNCOMPRESSED_BYTES."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(p) as z:
+            total = sum(i.file_size for i in z.infolist())
+    except zipfile.BadZipFile as exc:
+        raise ImportError_(f"{p.name}: not a valid zip-based file ({exc})") from exc
+    if total > MAX_UNCOMPRESSED_BYTES:
+        raise ImportError_(f"{p.name}: expands to {total / 1e6:,.0f} MB, above the "
+                           f"{MAX_UNCOMPRESSED_BYTES / 1e6:,.0f} MB import limit")
+
+
+def _check_npz_arrays(p: Path) -> None:
+    """Read every .npy header (shape, dtype) without loading data; refuse oversized arrays."""
+    import zipfile
+    total = 0
+    with zipfile.ZipFile(p) as z:
+        for info in z.infolist():
+            if not info.filename.endswith(".npy"):
+                continue
+            with z.open(info) as fh:
+                version = np.lib.format.read_magic(fh)
+                reader = (np.lib.format.read_array_header_1_0 if version == (1, 0)
+                          else np.lib.format.read_array_header_2_0)
+                shape, _fortran, dtype = reader(fh)
+            if dtype.hasobject:
+                raise ImportError_(f"{p.name}: {info.filename} holds Python objects, which are not loaded")
+            total += int(np.prod(shape, dtype=np.int64)) if shape else 1
+            if total > MAX_VALUES:
+                raise ImportError_(f"{p.name}: more than {MAX_VALUES:,} values in total; refusing to load")
+
+
 def read_npz(path: str | Path, **_kwargs: Any) -> list[Dataset]:
     p = Path(path)
+    _check_zip_budget(p)
+    _check_npz_arrays(p)
     with np.load(p, allow_pickle=False) as archive:
         headers = list(archive.files)
         columns = [np.asarray(archive[k], dtype=float).ravel() for k in headers]

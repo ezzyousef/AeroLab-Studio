@@ -24,22 +24,25 @@ def _write(tmp_path, name, text, encoding="utf-8"):
 
 
 # ------------------------------------------------------------------ record-level shape
-def test_a_row_wider_than_the_header_is_reported(tmp_path):
+def test_a_row_wider_than_the_header_is_refused_with_its_line(tmp_path):
+    # Behaviour changed after the Codex review (finding 2): a wider row is refused, not
+    # truncated into the analysis. Line 3 of the file is the offending record.
     p = _write(tmp_path, "wide_row.csv", "a,b\n1,2\n3,4,5\n6,7\n8,9\n")
-    ds = R.read_any(p)[0]
-    assert ds.headers == ["a", "b"]
-    np.testing.assert_allclose(ds.column("a"), [1, 3, 6, 8])
-    warnings = ds.meta.get("warnings", [])
-    assert any("3 fields" in w and "row" in w for w in warnings), warnings
+    with pytest.raises(R.ImportError_, match=r"line 3 has 3 values but the header has 2"):
+        R.read_any(p)
 
 
-def test_every_row_wider_than_the_header_keeps_all_columns(tmp_path):
+def test_every_row_wider_than_the_header_is_refused(tmp_path):
     p = _write(tmp_path, "all_wide.csv", "a,b\n1,2,3\n4,5,6\n7,8,9\n")
+    with pytest.raises(R.ImportError_, match=r"line 2 has 3 values but the header has 2 .3 such line.s.: 2, 3, 4"):
+        R.read_any(p)
+
+
+def test_a_short_row_is_kept_and_reported(tmp_path):
+    p = _write(tmp_path, "short.csv", "a,b,c\n1,2,3\n4,5\n7,8,9\n")
     ds = R.read_any(p)[0]
-    assert ds.n_cols == 3
-    assert ds.headers[:2] == ["a", "b"]
-    np.testing.assert_allclose(ds.columns[2], [3, 6, 9])
-    assert any("header" in w for w in ds.meta.get("warnings", []))
+    assert np.isnan(ds.column("c")[1])
+    assert any("line(s) 3" in w for w in ds.meta["warnings"])
 
 
 def test_a_title_line_above_a_wider_header(tmp_path):

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -99,6 +99,77 @@ def check_correlation(R: np.ndarray, names: Sequence[str] = ()) -> None:
                          f"semi-definite; smallest eigenvalue {smallest:.3g}). Check their signs.")
 
 
+# Dimensions whose values cannot be negative whatever the equation says (Codex review,
+# finding 4: a negative bulk density used to stay in the Monte Carlo distribution).
+NON_NEGATIVE = frozenset({
+    "length", "area", "second_moment", "volume", "mass", "density", "concentration",
+    "thermal_conductivity", "thermal_diffusivity", "diffusion_coefficient", "effusivity",
+    "specific_heat", "thermal_resistance", "specific_surface", "specific_volume", "viscosity",
+    "shear_rate", "frequency", "time", "velocity", "flow_rate", "wavevector", "surface_tension",
+    "cycles", "count_density", "linear_density", "bending_rigidity", "modulus", "pressure",
+})
+ABSOLUTE_ZERO_C = -273.15
+
+# Relations between inputs that the formula itself does not enforce.
+DOMAIN_RULES: dict[str, tuple] = {
+    "porosity_from_density": (lambda v: v["rho_b"] <= v["rho_s"], "bulk density ≤ skeletal density"),
+    "pore_volume": (lambda v: v["rho_b"] <= v["rho_s"], "bulk density ≤ skeletal density"),
+    "relative_density": (lambda v: v["rho_b"] <= v["rho_s"], "bulk density ≤ skeletal density"),
+    "k_model_aerogel_fibre": (lambda v: v["rho_b"] <= v["rho_s"], "bulk density ≤ skeletal density"),
+    "density_scaling_modulus": (lambda v: v["rho"] <= v["rho_s"], "density ≤ solid density"),
+    "density_scaling_crosslinked": (lambda v: v["rho"] <= v["rho_s"], "density ≤ solid density"),
+    "elastic_recovery": (lambda v: v["PS"] <= v["eps_max"], "permanent set ≤ maximum strain"),
+    "gel_content": (lambda v: v["W_gel"] <= v["W_0"], "insoluble mass ≤ initial mass"),
+    "crystallinity_xrd": (lambda v: v["A_cryst"] <= v["A_total"], "crystalline area ≤ total area"),
+    "ratcheting_strain": (lambda v: v["eps_min"] <= v["eps_max"], "minimum ≤ maximum strain"),
+}
+
+
+def lower_bound(var) -> float | None:
+    """Declared minimum, or the physical one implied by the variable's dimension."""
+    bounds = [b for b in (var.minimum,
+                          0.0 if var.dimension in NON_NEGATIVE else None,
+                          ABSOLUTE_ZERO_C if var.dimension == "temperature" and var.unit == "°C" else None)
+              if b is not None]
+    return max(bounds) if bounds else None
+
+
+def domain_mask(eq: Equation, values: Mapping[str, Any]) -> np.ndarray:
+    """True where every input is inside its physical bounds and the equation's relations hold.
+
+    Works on scalars and on arrays of draws alike."""
+    mask = np.array(True)
+    for var in eq.inputs:
+        if var.vector or var.symbol not in values:
+            continue
+        x = np.asarray(values[var.symbol], float)
+        lo = lower_bound(var)
+        if lo is not None:
+            mask = mask & (x >= lo)
+        if var.maximum is not None:
+            mask = mask & (x <= var.maximum)
+    rule = DOMAIN_RULES.get(eq.id)
+    if rule is not None:
+        mask = mask & np.asarray(rule[0]({k: np.asarray(v, float) if not isinstance(v, (list, tuple)) else v
+                                          for k, v in values.items()}), bool)
+    return mask
+
+
+def check_domain(eq: Equation, values: Mapping[str, Any]) -> None:
+    """Raise ValueError when the nominal values themselves are physically impossible."""
+    if not bool(np.all(domain_mask(eq, values))):
+        bad = []
+        for v in eq.inputs:
+            if v.vector or v.symbol not in values:
+                continue
+            x, lo = float(values[v.symbol]), lower_bound(v)
+            if (lo is not None and x < lo) or (v.maximum is not None and x > v.maximum):
+                bad.append(v.symbol)
+        rule = DOMAIN_RULES.get(eq.id)
+        why = f"outside physical bounds: {', '.join(bad)}" if bad else f"violates {rule[1]}" if rule else "outside the domain"
+        raise ValueError(f"{eq.id}: nominal values {why}")
+
+
 def _active(values: Mapping[str, float], sigmas: Mapping[str, float]) -> list[str]:
     return [k for k, s in sigmas.items() if s and k in values and not isinstance(values[k], (list, tuple))]
 
@@ -106,6 +177,7 @@ def _active(values: Mapping[str, float], sigmas: Mapping[str, float]) -> list[st
 def propagate_linear(eq: Equation, values: Mapping[str, float], sigmas: Mapping[str, float],
                      correlations: Mapping | None = None) -> LinearResult:
     """First-order propagation with an optional correlation matrix."""
+    check_domain(eq, values)
     base = float(eq.compute(**values))
     names = _active(values, sigmas)
     if not names:
@@ -138,6 +210,7 @@ def monte_carlo(eq: Equation, values: Mapping[str, float], sigmas: Mapping[str, 
     """Propagate by sampling. Reproducible for a given seed."""
     if n < 100:
         raise ValueError("Monte Carlo needs at least 100 draws")
+    check_domain(eq, values)
     names = _active(values, sigmas)
     if not names:
         v = float(eq.compute(**values))
@@ -169,13 +242,9 @@ def monte_carlo(eq: Equation, values: Mapping[str, float], sigmas: Mapping[str, 
                     out[j] = np.nan
     # Inputs declared non-negative (a density, a length) that were drawn negative are
     # outside the model, so those draws are rejected as well as non-finite outputs.
-    ok = np.isfinite(out)
-    for i, k in enumerate(names):
-        var = next((v for v in eq.inputs if v.symbol == k), None)
-        if var is not None and var.minimum is not None:
-            ok &= draws[:, i] >= var.minimum
-        if var is not None and var.maximum is not None:
-            ok &= draws[:, i] <= var.maximum
+    # Draws outside the physical bounds or the equation's relations are rejected, not kept.
+    ok = np.isfinite(out) & np.broadcast_to(
+        domain_mask(eq, {**fixed, **{k: draws[:, i] for i, k in enumerate(names)}}), (n,))
     used = out[ok]
     if used.size < 0.5 * n:
         raise ValueError(f"more than half of the Monte Carlo draws ({n - used.size} of {n}) fell outside "
@@ -187,17 +256,31 @@ def monte_carlo(eq: Equation, values: Mapping[str, float], sigmas: Mapping[str, 
 
 def compare(linear: LinearResult, mc: MonteCarloResult, tolerance: float = 0.1) -> dict:
     """Does the linear σ describe the Monte Carlo spread? Returns flags and a sentence."""
-    out = {"agree": True, "sd_ratio": float("nan"), "bias": float("nan"), "asymmetry": float("nan"),
-           "message": ""}
-    if not (math.isfinite(linear.sigma) and linear.sigma > 0 and mc.sd > 0):
-        out["message"] = "nothing to compare (zero or unavailable uncertainty)"
+    out = {"agree": False, "status": "", "sd_ratio": float("nan"), "bias": float("nan"),
+           "asymmetry": float("nan"), "message": ""}
+    # Codex review, finding 5: a failed or zero linear estimate is never "agreement".
+    if not math.isfinite(linear.sigma):
+        out.update(status="unavailable",
+                   message="The linear estimate is unavailable at this point (a derivative failed); "
+                           f"use the Monte Carlo 95 % interval {mc.low:.4g} – {mc.high:.4g}.")
+        return out
+    if linear.sigma == 0 and mc.sd > 0:
+        out.update(status="disagree",
+                   message="The linear estimate is zero but the Monte Carlo spread is not (a stationary point "
+                           f"or a nonlinear response): report the Monte Carlo 95 % interval {mc.low:.4g} – {mc.high:.4g}.")
+        return out
+    if linear.sigma == 0 and mc.sd == 0:
+        out.update(agree=True, status="exact", message="No input uncertainty: both methods give an exact value.")
+        return out
+    if mc.sd == 0:
+        out.update(status="disagree", message="The Monte Carlo spread is zero but the linear estimate is not.")
         return out
     ratio = mc.sd / linear.sigma
     bias = (mc.mean - linear.value) / linear.sigma
     up, down = mc.high - mc.median, mc.median - mc.low
     asym = (up - down) / (up + down) if (up + down) > 0 else 0.0
     agree = abs(ratio - 1.0) <= tolerance and abs(bias) <= tolerance and abs(asym) <= tolerance
-    out.update(agree=agree, sd_ratio=ratio, bias=bias, asymmetry=asym)
+    out.update(agree=agree, status="agree" if agree else "disagree", sd_ratio=ratio, bias=bias, asymmetry=asym)
     if agree:
         out["message"] = (f"Monte Carlo agrees with the linear estimate (SD ratio {ratio:.3f}); "
                           "the ± value is a fair 1σ.")

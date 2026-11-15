@@ -514,6 +514,51 @@ def _safe_member(name: str) -> bool:
     return ".." not in parts and all(parts)
 
 
+def _place_attachment(dest_root: Path, name: str, data: bytes, digest: str, attempts: int = 100) -> Path:
+    """Write `data` under `dest_root`, or reuse an identical file already there.
+
+    Every candidate name goes through the same checks (Codex review, finding 1):
+    * it must be a plain name directly inside `dest_root` (no separators, no '..');
+    * a path that is a link (even a dangling one) or anything but a regular file is skipped;
+    * an existing regular file is reused only if its SHA-256 equals the archive's;
+    * a new file is created exclusively (O_EXCL, and O_NOFOLLOW where the OS has it), so
+      it can neither overwrite nor follow a link planted between the check and the write.
+    """
+    if not name or name in (".", "..") or "/" in name or "\\" in name or ":" in name:
+        raise WorkspaceError(f"unsafe attachment name {name!r}")
+    stem, suffix = os.path.splitext(name)
+    candidates = [name, f"{stem}_{digest[:8]}{suffix}"] + [f"{stem}_{digest[:8]}_{i}{suffix}"
+                                                           for i in range(1, attempts)]
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    for cand in candidates:
+        target = dest_root / cand
+        if target.parent != dest_root:
+            continue
+        if os.path.islink(target):
+            continue
+        if os.path.lexists(target):
+            if target.is_file() and not os.path.islink(target) and sha256_file(target) == digest:
+                return target
+            continue
+        try:
+            fd = os.open(target, flags, 0o644)
+        except FileExistsError:
+            continue
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+        except BaseException:
+            try:
+                os.unlink(target)
+            finally:
+                raise
+        if sha256_file(target) != digest:           # paranoia: what landed is what was verified
+            os.unlink(target)
+            raise WorkspaceError(f"{name}: written file does not match its SHA-256")
+        return target
+    raise WorkspaceError(f"{name}: no free file name in {dest_root} after {attempts} attempts")
+
+
 def import_archive(path: str | Path, extract_to: str | Path) -> tuple[dict[str, Any], list[str]]:
     """Read an archive: verify every member, extract attachments, re-point their paths.
 
@@ -562,15 +607,7 @@ def import_archive(path: str | Path, extract_to: str | Path) -> tuple[dict[str, 
             digest = hashlib.sha256(data).hexdigest()
             if digest != att.sha256 or digest != entry["sha256"]:
                 raise WorkspaceError(f"{att.name}: SHA-256 mismatch inside the archive — it was altered")
-            target = (dest_root / PurePosixPath(entry["name"]).name).resolve()
-            if dest_root not in target.parents:
-                raise WorkspaceError(f"unsafe attachment name {entry['name']!r}")
-            if target.exists() and sha256_file(target) != digest:
-                # never overwrite a different file that happens to share the name
-                target = target.with_name(f"{target.stem}_{digest[:8]}{target.suffix}")
-            if not target.exists():
-                target.write_bytes(data)
-            att.path = str(target)
+            att.path = str(_place_attachment(dest_root, PurePosixPath(entry["name"]).name, data, digest))
         ws.log("archive imported", "session", f"{p.name}: {len(expected)} attachment(s) verified")
         payload["workspace"] = ws.to_dict()
     return payload, notes

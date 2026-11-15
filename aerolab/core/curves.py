@@ -867,8 +867,13 @@ def _rouquerol_problems(x: np.ndarray, v: np.ndarray, f: dict) -> list[str]:
 def analyze_sorption_bet(p_p0: Sequence[float], volume_stp: Sequence[float], *,
                          bet_range: tuple[float, float] = (0.05, 0.30),
                          auto_range: bool = False,
-                         pore_volume_at: float = 0.99) -> AnalysisResult:
+                         pore_volume_at: float = 0.99, branch: str = "auto") -> AnalysisResult:
     """Multipoint BET surface area, C constant, Gurvich pore volume and 4V/S pore size.
+
+    `branch` says which branch the points are: "auto" works out adsorption-then-desorption
+    files by the pressure maximum, but a file whose pressure only falls cannot be told
+    apart (a reversed adsorption export or a desorption-only export), so it is refused
+    until the user picks "adsorption" or "desorption". The choice goes into the result.
 
     Only the adsorption branch is used: if the file continues into desorption (pressure
     falling after its maximum), those points are dropped. The fit is checked against the
@@ -882,11 +887,22 @@ def analyze_sorption_bet(p_p0: Sequence[float], volume_stp: Sequence[float], *,
         ok = np.isfinite(x_raw) & np.isfinite(v_raw)
         xr, vr = x_raw[ok], v_raw[ok]
         i_top = int(np.argmax(xr))
+        if branch not in ("auto", "adsorption", "desorption"):
+            raise ValueError(f"sorption: branch must be auto, adsorption or desorption, not {branch!r}")
         if i_top == 0 and np.all(np.diff(xr) <= 0):
-            # Monotonically falling pressure from the first point is one branch listed
-            # high-to-low (some exports do), not adsorption followed by desorption. It used
-            # to be cut down to its first point and refused as "need at least 3 points".
-            branch_note = "points listed high-to-low; sorted by pressure"
+            # Pressure only falls: order alone cannot say which branch this is (Codex review,
+            # finding 6), so the user must say.
+            if branch == "auto":
+                raise ValueError("sorption: the relative pressure only falls, so this may be a desorption "
+                                 "branch or an adsorption branch listed high-to-low. Choose the branch "
+                                 "(adsorption or desorption) in Settings and run again.")
+            branch_note = (f"points listed high-to-low, declared the {branch} branch by the user; "
+                           "sorted by pressure")
+            if branch == "desorption":
+                branch_note += " (BET is defined on adsorption: treat this surface area with caution)"
+        elif branch == "desorption" and i_top < xr.size - 1 and np.any(np.diff(xr[i_top:]) < 0):
+            branch_note = f"desorption branch used as chosen ({xr.size - i_top} points); BET is defined on adsorption"
+            xr, vr = xr[i_top:], vr[i_top:]
         elif i_top < xr.size - 1 and np.any(np.diff(xr[i_top:]) < 0):
             branch_note = f"desorption branch ({xr.size - i_top - 1} points) ignored"
             xr, vr = xr[:i_top + 1], vr[:i_top + 1]
@@ -963,7 +979,7 @@ def analyze_sorption_bet(p_p0: Sequence[float], volume_stp: Sequence[float], *,
     }
     return AnalysisResult("sorption", metrics, curves,
                           {"slope": f["slope"], "intercept": f["intercept"], "range": (x_lo, x_hi),
-                           "criteria_problems": problems})
+                           "criteria_problems": problems, "branch": branch, "branch_note": branch_note})
 
 
 # ---------------------------------------------------------------------------

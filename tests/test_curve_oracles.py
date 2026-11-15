@@ -33,7 +33,7 @@ def test_bet_surface_area_from_an_exact_isotherm(reverse):
     v = vm * c * x / ((1 - x) * (1 - x + c * x))
     if reverse:                      # some instruments list the points high-to-low
         x, v = x[::-1], v[::-1]
-    r = C.analyze_sorption_bet(x, v, bet_range=(0.05, 0.30))
+    r = C.analyze_sorption_bet(x, v, bet_range=(0.05, 0.30), branch="adsorption" if reverse else "auto")
     expected_s = vm / V_STP * AVOGADRO * N2_AREA       # m^2/g; = 348.2 for vm = 80
     assert expected_s == pytest.approx(348.2, rel=1e-3)
     assert r.value("BET surface area") == pytest.approx(expected_s, rel=1e-6)

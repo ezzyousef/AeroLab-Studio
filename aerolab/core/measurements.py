@@ -672,6 +672,10 @@ MEASUREMENTS: tuple[Measurement, ...] = (
             Option("pore_volume_at", "Gurvich point", "float", 0.99,
                    "Relative pressure at which total pore volume is read.",
                    minimum=0.5, maximum=0.999),
+            Option("branch", "Isotherm branch", "choice", "auto",
+                   "auto handles adsorption followed by desorption. A file whose pressure only falls "
+                   "must be declared adsorption (listed high-to-low) or desorption.",
+                   choices=("auto", "adsorption", "desorption")),
         ),
         plots=(
             Plot("isotherm", "N₂ adsorption isotherm", "Relative pressure p/p₀", "-",

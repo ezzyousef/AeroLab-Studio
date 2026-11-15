@@ -6,6 +6,7 @@ read from it and never from each other, so adding a page never means touching th
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,10 @@ class Run:
     options: dict[str, Any] = field(default_factory=dict)
     mapping: dict[str, int | None] = field(default_factory=dict)
     created: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
+    # Persistent unique id (saved with the session). Two analyses of the same file as the
+    # same measurement are different runs and must not share a workspace link (Codex
+    # review, finding 7); run_id is only a display counter and is renumbered on load.
+    uid: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     @property
     def title(self) -> str:
@@ -45,7 +50,12 @@ class Run:
 
     @property
     def key(self) -> str:
-        """Stable across save/load (run ids are renumbered): used to link runs to experiments."""
+        """The id used to link this run to experiments, lineage and notebook entries."""
+        return self.uid
+
+    @property
+    def legacy_key(self) -> str:
+        """The 1.3.0-development link key ("dataset::measurement"), for migrating old links."""
         return f"{self.dataset_name or self.sample}::{self.measurement.id}"
 
 
@@ -344,7 +354,7 @@ class Session(QObject):
         """Re-running with new settings replaces the Run, so undo restores the old one."""
         index = self.runs.index(run)
         self.runs[index] = Run(run.run_id, run.sample, run.measurement, result,
-                               run.dataset_name, run.source, options, run.mapping, run.created)
+                               run.dataset_name, run.source, options, run.mapping, run.created, run.uid)
         self._record(f"re-run “{run.sample}” with new settings")
         self.runs_changed.emit()
 
@@ -414,6 +424,7 @@ class Session(QObject):
                          for n in self.notebook],
             "runs": [
                 {
+                    "uid": r.uid,
                     "sample": r.sample,
                     "measurement": r.measurement.id,
                     "dataset": r.dataset_name,
@@ -479,10 +490,11 @@ class Session(QObject):
             result = AR(measurement.id, metrics, curves, {"measurement": measurement.id})
             mapping = {k: (int(v) if isinstance(v, (int, float)) else None)
                        for k, v in (entry.get("mapping") or {}).items()}
+            extra = {"uid": str(entry["uid"])} if entry.get("uid") else {}
             self.add_run(entry.get("sample", "sample"), measurement, result, record=False,
                          dataset_name=entry.get("dataset", ""), source=entry.get("source", ""),
                          options=M.upgrade_options(measurement.id, entry.get("options", {})),
-                         mapping=mapping)
+                         mapping=mapping, **extra)
             loaded += 1
 
         for entry in payload.get("manual", []):
@@ -500,6 +512,7 @@ class Session(QObject):
                 monte_carlo={k: _float(v) for k, v in entry.get("monte_carlo", {}).items()}))
         self.workspace = W.Workspace.from_dict(payload.get("workspace"))
         self.workspace.actor = self.author
+        self._relink_legacy_runs(payload)
         self.notebook = [NoteEntry(str(n.get("time", "")), str(n.get("text", "")), str(n.get("author", "")),
                                    tuple(n.get("links", ()))) for n in payload.get("notebook", [])
                          if isinstance(n, dict)]
@@ -514,6 +527,31 @@ class Session(QObject):
         extra = f" ({migration_notes[0]})" if migration_notes else ""
         self.status.emit(f"Loaded {loaded} run(s) from {display}{extra}", "success")
         return loaded
+
+    def _relink_legacy_runs(self, payload: dict[str, Any]) -> None:
+        """Files saved before runs had a uid linked them by "dataset::measurement".
+
+        Such a link is moved to the new uid only when exactly one run has that legacy key;
+        an ambiguous link is left as it was and recorded in the lineage instead of being
+        guessed."""
+        no_uid = [r for r, e in zip(self.runs, payload.get("runs", [])) if not e.get("uid")]
+        if not no_uid:
+            return
+        by_legacy: dict[str, list[Run]] = {}
+        for r in no_uid:
+            by_legacy.setdefault(r.legacy_key, []).append(r)
+        for exp in self.workspace.experiments.values():
+            new_keys = []
+            for k in exp.run_keys:
+                runs = by_legacy.get(k, [])
+                if len(runs) == 1:
+                    new_keys.append(runs[0].uid)
+                else:
+                    new_keys.append(k)
+                    if len(runs) > 1:
+                        self.workspace.log("ambiguous run link kept", f"run:{k}",
+                                           f"{len(runs)} runs share this legacy key; relink by hand")
+            exp.run_keys = new_keys
 
     # -- portable archive --------------------------------------------------------
     def save_archive(self, path: str | Path) -> tuple[Path, list[str]]:
