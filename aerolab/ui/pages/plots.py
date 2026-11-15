@@ -63,6 +63,16 @@ class PlotsPage(Page):
         graph_row.addWidget(self.plot_combo, 1)
         left.body.addLayout(graph_row)
 
+        layout_row = QHBoxLayout()
+        layout_row.addWidget(QLabel("Layout"))
+        self.layout_combo = QComboBox()
+        self.layout_combo.setAccessibleName("Figure layout template")
+        self.layout_combo.setToolTip("Overlay every run on one axis, or give each run its own labelled panel")
+        self.layout_combo.addItems(list(F.LAYOUTS))
+        self.layout_combo.currentIndexChanged.connect(self._draw)
+        layout_row.addWidget(self.layout_combo, 1)
+        left.body.addLayout(layout_row)
+
         self.run_list = QListWidget()
         self.run_list.itemChanged.connect(lambda _i: self._draw())
         left.body.addWidget(self.run_list, 1)
@@ -166,6 +176,10 @@ class PlotsPage(Page):
         plot_id = self.plot_combo.currentData()
         template = next((p for p in runs[0].measurement.plots if p.id == plot_id),
                         runs[0].measurement.plots[0])
+        layout = self.layout_combo.currentText()
+        if F.LAYOUTS.get(layout, (1, 1)) != (1, 1):
+            self._draw_panels(runs, template, layout)
+            return
 
         merged, roles = _merge(runs, template, show_fits=self.chk_fits.isChecked())
         if not merged:
@@ -184,6 +198,20 @@ class PlotsPage(Page):
                                  palette_name=self.session.palette_name)
         self.canvas.show_plot(data, theme=self.session.theme,
                               legend=self.chk_legend.isChecked())
+
+    def _draw_panels(self, runs, template: Plot, layout: str) -> None:
+        """One panel per run, laid out by the chosen template."""
+        panels = []
+        for run in runs:
+            series = tuple(s for s in template.series if self.chk_fits.isChecked() or s.role != "fit")
+            plot = Plot(template.id, run.sample, template.x_label, template.x_unit, template.y_label,
+                        template.y_unit, series, template.xscale, template.yscale, template.note)
+            panels.append(F.build_plot_data(plot, run.result, theme=self.session.theme,
+                                            palette_name=self.session.palette_name))
+        F.render_panels(panels, layout, theme=self.session.theme, figure=self.canvas.figure,
+                        legend=self.chk_legend.isChecked())
+        self.canvas.canvas.draw_idle()
+        self.last_panels = len(panels)
 
     def _save(self) -> None:
         start = self.session.settings.get("last_export_dir", "")

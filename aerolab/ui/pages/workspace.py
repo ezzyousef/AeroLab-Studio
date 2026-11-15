@@ -62,7 +62,7 @@ class WorkspacePage(Page):
     title = "Workspace"
     subtitle = ("Samples, composition, spinning and drying parameters, the experiments run on them, "
                 "attached raw files and the full chain of custody.")
-    glyph = "▦"
+    glyph = "≡"
 
     def __init__(self, session, parent=None):
         super().__init__(session, parent)
@@ -222,6 +222,9 @@ class WorkspacePage(Page):
         split.setStretchFactor(0, 2)
         split.setStretchFactor(1, 4)
         split.setStretchFactor(2, 4)
+        # Taller than a laptop viewport on purpose: the page scrolls instead of squeezing the
+        # experiment form over its table.
+        split.setMinimumHeight(980)
         self.content.addWidget(split, 1)
         self._status: dict[str, str] = {}
 

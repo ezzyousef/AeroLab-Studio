@@ -15,21 +15,23 @@ from .state import Session
 from . import theme as T
 from .pages import (AboutPage, CalculatorPage, DataPage, ExportPage, HomePage, MeasurePage,
                     PlotsPage, SettingsPage, ValidationPage, WorkspacePage, MechanicsPage,
-                    MaterialsPage, ExplorerPage)
+                    MaterialsPage, ExplorerPage, NotebookPage)
 from .widgets import CommandPalette, ToastHost, icon_label
 
 __all__ = ["MainWindow", "run"]
 
 PAGES = [
+    # grouped by task: bring data in and describe it, analyse it, dig deeper, hand it on
     ("home", HomePage, "Session"),
     ("data", DataPage, "Session"),
     ("workspace", WorkspacePage, "Session"),
+    ("notebook", NotebookPage, "Session"),
     ("calculator", CalculatorPage, "Analyse"),
     ("measure", MeasurePage, "Analyse"),
     ("plots", PlotsPage, "Analyse"),
-    ("mechanics", MechanicsPage, "Analyse"),
-    ("materials", MaterialsPage, "Analyse"),
-    ("explorer", ExplorerPage, "Analyse"),
+    ("mechanics", MechanicsPage, "Studios"),
+    ("materials", MaterialsPage, "Studios"),
+    ("explorer", ExplorerPage, "Studios"),
     ("export", ExportPage, "Output"),
     ("validation", ValidationPage, "Output"),
     ("settings", SettingsPage, "Output"),
@@ -53,7 +55,16 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         self.rail = self._build_rail()
-        layout.addWidget(self.rail)
+        # Fourteen pages do not fit a 600 px tall window at 150 % scaling: let the rail scroll.
+        from PySide6.QtWidgets import QScrollArea
+        rail_scroll = QScrollArea()
+        rail_scroll.setObjectName("NavRailScroll")
+        rail_scroll.setWidget(self.rail)
+        rail_scroll.setWidgetResizable(True)
+        rail_scroll.setFrameShape(QFrame.NoFrame)
+        rail_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        rail_scroll.setFixedWidth(self.rail.width() + 14)
+        layout.addWidget(rail_scroll)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
@@ -482,10 +493,23 @@ def _claim_taskbar_identity() -> None:
         pass
 
 
+def configure_high_dpi() -> None:
+    """Fractional scaling (125 %, 150 %) is passed through instead of rounded.
+
+    Qt 6 scales by default but rounds 1.5 to 2, which makes text and plots oversized on
+    common laptop settings. Must run before the QApplication is created.
+    """
+    from PySide6.QtGui import QGuiApplication
+    if QGuiApplication.instance() is None:
+        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+
+
 def run(argv: list[str] | None = None) -> int:
     """Start the application."""
     argv = list(argv if argv is not None else sys.argv)
     _claim_taskbar_identity()
+    configure_high_dpi()
     QApplication.setAttribute(Qt.AA_DontUseNativeMenuBar, False)
     app = QApplication.instance() or QApplication(argv)
     app.setApplicationName("AeroLab Studio")

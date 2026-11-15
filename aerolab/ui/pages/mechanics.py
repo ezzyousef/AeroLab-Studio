@@ -30,7 +30,7 @@ class MechanicsPage(Page):
     title = "Mechanics studio"
     subtitle = ("Window sensitivity, cycle energies, fatigue model comparison with bootstrap intervals, "
                 "viscoelastic models and linked images. Fits never extend beyond the tested range.")
-    glyph = "⟂"
+    glyph = "σ"
 
     def __init__(self, session, parent=None):
         super().__init__(session, parent)

@@ -24,7 +24,7 @@ class MaterialsPage(Page):
     title = "Materials studio"
     subtitle = ("Decomposition steps, DSC events and crystallinity, porosity from N₂ and from densities, "
                 "k versus density, the linear viscoelastic region, and QC flags for every run.")
-    glyph = "⬡"
+    glyph = "Δ"
 
     def __init__(self, session, parent=None):
         super().__init__(session, parent)

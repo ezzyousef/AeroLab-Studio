@@ -31,7 +31,7 @@ class ExplorerPage(Page):
     title = "Explorer"
     subtitle = ("Compare batches, fit response surfaces to your own results, rank sensitivities, find "
                 "dimensionless groups, plan experiments and write a report with full provenance.")
-    glyph = "◎"
+    glyph = "∑"
 
     def __init__(self, session, parent=None):
         super().__init__(session, parent)
