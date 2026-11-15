@@ -11,7 +11,8 @@ from .settings import SettingsPage
 from .about import AboutPage
 from .workspace import WorkspacePage
 from .mechanics import MechanicsPage
+from .materials import MaterialsPage
 
 __all__ = ["Page", "HomePage", "CalculatorPage", "DataPage", "MeasurePage", "PlotsPage",
            "ExportPage", "ValidationPage", "SettingsPage", "AboutPage",
-           "WorkspacePage", "MechanicsPage"]
+           "WorkspacePage", "MechanicsPage", "MaterialsPage"]

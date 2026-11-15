@@ -80,3 +80,37 @@ def test_mechanics_studio_recomputes_after_a_session_round_trip(qapp, samples_di
         kinds.add(page.last.get("kind"))
     assert kinds == {"cycles", "visco"}
     page.deleteLater()
+
+
+def test_materials_studio_views_and_qc(qapp, samples_dir):
+    from aerolab.core import workspace as W
+    from aerolab.ui.pages.materials import MaterialsPage
+
+    kinds = ("tga", "dsc", "sorption", "crossover", "k_density", "herschel_bulkley")
+    session = _session_with(kinds, samples_dir)
+    session.edit_workspace("sample", lambda ws: ws.add_sample(W.Sample(
+        "T100-S100", bulk_density_g_cm3=0.211, skeletal_density_g_cm3=1.058)))
+    page = MaterialsPage(session)
+    page.refresh()
+    seen = {}
+    for run in session.runs:
+        page.select_run(run.run_id)
+        seen[run.measurement.id] = page.last.get("kind")
+        assert page.flags.count() >= 1
+        assert any("Not linked" in m for _l, m in page.last["flags"])
+    assert seen == {"tga": "tga", "dsc": "dsc", "sorption": "porosity", "crossover": "lver",
+                    "k_density": "k_density", "herschel_bulkley": "generic"}
+
+    # porosity summary picks up the sample's densities
+    page.select_run(next(r.run_id for r in session.runs if r.measurement.id == "sorption"))
+    page.sample_combo.setCurrentIndex(page.sample_combo.findData("T100-S100"))
+    assert "Pore volume seen by N₂" in page.last["summary"]
+
+    # crystallinity only with a user-supplied ΔH°m
+    page.select_run(next(r.run_id for r in session.runs if r.measurement.id == "dsc"))
+    page.dh100.setText("196.8")
+    page.polymer_fraction.setText("0.67")
+    page._show()
+    endo = [r for r in page.last["rows"] if r["kind"] == "endotherm"]
+    assert endo and endo[0]["crystallinity"] > 0
+    page.deleteLater()

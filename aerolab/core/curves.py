@@ -553,9 +553,17 @@ def analyze_tga(temperature: Sequence[float], weight_pct: Sequence[float], *,
     metrics.append(Metric("Total mass loss", float(loss[-1]), "%", basis_note))
     metrics.append(Metric("Onset temperature", _onset_temperature(T, w), "°C",
                           "steepest-descent tangent meets the initial plateau level (mean of the first 5 % of points)"))
+    from .materials import tga_steps
+    steps = tga_steps(T, w)
+    metrics.append(Metric("Decomposition steps", float(len(steps)), "steps",
+                          "split at the valleys of the DTG curve; steps under 1 % are merged"))
+    for i, st in enumerate(steps, start=1):
+        metrics.append(Metric(f"Step {i} mass loss", st["loss"], "%",
+                              f"{st['start']:.0f}–{st['end']:.0f} °C, DTG peak {st['peak']:.0f} °C "
+                              "(% of the initial weight)"))
 
     curves = {"TGA": (T, w), "DTG": (T, dtg_s), "mass loss": (T, loss)}
-    return AnalysisResult("tga", metrics, curves, {"peaks": [float(T[p]) for p in peaks]})
+    return AnalysisResult("tga", metrics, curves, {"peaks": [float(T[p]) for p in peaks], "steps": steps})
 
 
 def _merge_duplicate_x(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -1023,16 +1031,21 @@ def find_moduli_crossover(x: Sequence[float], g_storage: Sequence[float],
     g_at_cross = (float(10.0 ** np.interp(cross_log, np.log10(xa), np.log10(gp)))
                   if math.isfinite(crossover) else float("nan"))
     plateau = float(np.median(gp[: max(3, xa.size // 5)]))
+    from .materials import lver_limit
+    lver = lver_limit(xa, gp, tolerance=0.1)
 
     metrics = [
         Metric("Flow point (G′ = G″)", crossover, x_unit, f"{x_label} at the crossover"),
         Metric("Modulus at crossover", g_at_cross, "Pa"),
-        Metric("Plateau G′", plateau, "Pa", "median of the first 20 % of points (not a detected linear viscoelastic region)"),
+        Metric("Plateau G′", plateau, "Pa", "median of the first 20 % of points"),
+        Metric("End of linear viscoelastic region", lver["limit"], x_unit,
+               f"{x_label} where G′ first falls 10 % below the plateau (log–log interpolation)"
+               if math.isfinite(lver["limit"]) else "G′ stays within 10 % of the plateau over the sweep"),
         Metric("tan δ at first point", float(gpp[0] / gp[0]), "-"),
         Metric("Solid-like", 1.0 if gp[0] > gpp[0] else 0.0, "-", "1 = G′ > G″ at low amplitude"),
     ]
     curves = {"G'": (xa, gp), "G''": (xa, gpp)}
-    return AnalysisResult("crossover", metrics, curves, {"crossover": crossover})
+    return AnalysisResult("crossover", metrics, curves, {"crossover": crossover, "lver": lver["limit"]})
 
 
 # ---------------------------------------------------------------------------

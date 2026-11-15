@@ -14,7 +14,8 @@ from .. import __version__
 from .state import Session
 from . import theme as T
 from .pages import (AboutPage, CalculatorPage, DataPage, ExportPage, HomePage, MeasurePage,
-                    PlotsPage, SettingsPage, ValidationPage, WorkspacePage, MechanicsPage)
+                    PlotsPage, SettingsPage, ValidationPage, WorkspacePage, MechanicsPage,
+                    MaterialsPage)
 from .widgets import CommandPalette, ToastHost, icon_label
 
 __all__ = ["MainWindow", "run"]
@@ -27,6 +28,7 @@ PAGES = [
     ("measure", MeasurePage, "Analyse"),
     ("plots", PlotsPage, "Analyse"),
     ("mechanics", MechanicsPage, "Analyse"),
+    ("materials", MaterialsPage, "Analyse"),
     ("export", ExportPage, "Output"),
     ("validation", ValidationPage, "Output"),
     ("settings", SettingsPage, "Output"),

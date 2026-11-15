@@ -14,6 +14,7 @@ from typing import Any, Callable, Sequence
 import numpy as np
 
 from . import curves as C
+from . import materials as MT
 from . import mechanics as MX
 from . import units as U
 from .curves import AnalysisResult
@@ -621,6 +622,32 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         reference="Omranpour et al. (2025), Eqs. 8–10; (2024b), Eq. 5",
         sample="thermal_samples.csv",
         tags=("conductivity", "diffusivity", "effusivity", "R-value"),
+    ),
+
+    Measurement(
+        id="k_density",
+        name="Thermal conductivity versus density",
+        category="Thermal & chemical",
+        summary="Linear, quadratic and power-law fits of conductivity against bulk density, compared by AIC; "
+                "the density of minimum conductivity is reported only when it lies inside the tested range.",
+        channels=(
+            _ch("density", "Bulk density", "g/cm^3", "density", "ρb", "rho", "apparent density"),
+            _ch("conductivity", "Thermal conductivity", "mW/(m·K)", "thermal_conductivity",
+                "k", "lambda", "conductivity"),
+        ),
+        plots=(
+            Plot("k_rho", "Conductivity versus density", "Bulk density", "g/cm³",
+                 "Thermal conductivity", "mW/(m·K)",
+                 (Series("data", "Measured", "scatter", "data"),
+                  Series("linear fit", "Linear", "line", "fit"),
+                  Series("quadratic fit", "Quadratic", "line", "fit"),
+                  Series("power-law fit", "Power law", "line", "fit")),
+                 note="Fits are drawn over the tested densities only."),
+        ),
+        analyser=MT.fit_k_vs_density,
+        reference="Omranpour et al. (2025), Fig. 6; Lu et al. (1992) for the k(ρ) trade-off",
+        sample="thermal_samples.csv",
+        tags=("conductivity", "density", "insulation", "optimum"),
     ),
 
     # ------------------------------------------------------------ structure
