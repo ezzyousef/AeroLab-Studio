@@ -14,7 +14,7 @@ from .. import __version__
 from .state import Session
 from . import theme as T
 from .pages import (AboutPage, CalculatorPage, DataPage, ExportPage, HomePage, MeasurePage,
-                    PlotsPage, SettingsPage, ValidationPage)
+                    PlotsPage, SettingsPage, ValidationPage, WorkspacePage)
 from .widgets import CommandPalette, ToastHost, icon_label
 
 __all__ = ["MainWindow", "run"]
@@ -22,6 +22,7 @@ __all__ = ["MainWindow", "run"]
 PAGES = [
     ("home", HomePage, "Session"),
     ("data", DataPage, "Session"),
+    ("workspace", WorkspacePage, "Session"),
     ("calculator", CalculatorPage, "Analyse"),
     ("measure", MeasurePage, "Analyse"),
     ("plots", PlotsPage, "Analyse"),
@@ -167,6 +168,8 @@ class MainWindow(QMainWindow):
             (None, None, None),
             ("&Save session…", QKeySequence.Save, self.save_session),
             ("&Open session…", "Ctrl+Shift+O", self.open_session),
+            ("Save &archive with attachments…", None, lambda: self._page_action("workspace", "save_archive")),
+            ("Open a&rchive…", None, lambda: self._page_action("workspace", "open_archive")),
             (None, None, None),
             ("Export to &Excel…", "Ctrl+E", lambda: self._page_action("export", "export_excel")),
             ("Export to &Origin…", "Ctrl+R", lambda: self._page_action("export", "export_origin")),
@@ -312,6 +315,10 @@ class MainWindow(QMainWindow):
              lambda: self._page_action("data", "analyse_all")),
             ("Save session", "File", self.save_session),
             ("Open session", "File", self.open_session),
+            ("Save archive with attachments", "File", lambda: self._page_action("workspace", "save_archive")),
+            ("Open archive", "File", lambda: self._page_action("workspace", "open_archive")),
+            ("New sample", "Workspace", lambda: self._page_action("workspace", "new_sample")),
+            ("Verify attached files", "Workspace", lambda: self._page_action("workspace", "verify_files")),
             ("Export to Excel", "Output", lambda: self._page_action("export", "export_excel")),
             ("Export to Origin", "Output", lambda: self._page_action("export", "export_origin")),
             ("Write LabTalk package", "Output",
@@ -486,7 +493,7 @@ def run(argv: list[str] | None = None) -> int:
     # Files passed on the command line are imported once the window is up.
     files = [a for a in argv[1:] if not a.startswith("-") and Path(a).exists()]
     if files:
-        sessions = [f for f in files if f.lower().endswith(".aerolab")]
+        sessions = [f for f in files if f.lower().endswith((".aerolab", ".aerolabz"))]
         data_files = [f for f in files if f not in sessions]
         QTimer.singleShot(120, lambda: _open_startup_files(window, sessions, data_files))
     return app.exec()
@@ -496,8 +503,12 @@ def _open_startup_files(window: MainWindow, sessions: list[str], data_files: lis
     """Handle whatever was double-clicked or passed on the command line."""
     for path in sessions[:1]:                 # a session replaces the state, so take one
         try:
-            window.session.load_project(path)
-            window.go_to("measure")
+            if path.lower().endswith(".aerolabz"):
+                window.session.open_archive(path)
+                window.go_to("workspace")
+            else:
+                window.session.load_project(path)
+                window.go_to("measure")
         except Exception as exc:              # noqa: BLE001 - reported in the UI
             window.session.status.emit(f"Could not open {Path(path).name}: {exc}", "error")
     if data_files:
