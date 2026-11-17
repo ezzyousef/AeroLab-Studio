@@ -6,6 +6,7 @@ read from it and never from each other, so adding a page never means touching th
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal
 
 from ..core import measurements as M
+from ..core import workspace as W
 from ..core.curves import AnalysisResult
 from ..core.measurements import Measurement
 from ..io.readers import Dataset
@@ -37,10 +39,33 @@ class Run:
     options: dict[str, Any] = field(default_factory=dict)
     mapping: dict[str, int | None] = field(default_factory=dict)
     created: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
+    # Persistent unique id (saved with the session). Two analyses of the same file as the
+    # same measurement are different runs and must not share a workspace link (Codex
+    # review, finding 7); run_id is only a display counter and is renumbered on load.
+    uid: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     @property
     def title(self) -> str:
         return f"{self.sample} · {self.measurement.name}"
+
+    @property
+    def key(self) -> str:
+        """The id used to link this run to experiments, lineage and notebook entries."""
+        return self.uid
+
+    @property
+    def legacy_key(self) -> str:
+        """The 1.3.0-development link key ("dataset::measurement"), for migrating old links."""
+        return f"{self.dataset_name or self.sample}::{self.measurement.id}"
+
+
+@dataclass(frozen=True)
+class NoteEntry:
+    """One entry of the scientific notebook: free text, timestamped, linked to records."""
+    time: str
+    text: str
+    author: str = ""
+    links: tuple[str, ...] = ()           # "sample:S1", "run:<key>", "experiment:E1"
 
 
 @dataclass
@@ -55,6 +80,8 @@ class ManualCalc:
     uncertainty: float | None = None
     created: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
     input_uncertainties: dict[str, float] = field(default_factory=dict)
+    correlations: dict[str, float] = field(default_factory=dict)     # "a|b" -> Pearson r
+    monte_carlo: dict[str, float] = field(default_factory=dict)      # mean, sd, low, high, n, seed
 
     def input_text(self) -> str:
         def one(k, v):
@@ -62,7 +89,22 @@ class ManualCalc:
             if k in self.input_uncertainties:
                 s += f" ± {_fmt(self.input_uncertainties[k])}"
             return s
-        return ", ".join(one(k, v) for k, v in self.inputs.items())
+        text = ", ".join(one(k, v) for k, v in self.inputs.items())
+        if self.correlations:
+            text += "; " + ", ".join(f"r({k.replace('|', ',')})={r:g}" for k, r in self.correlations.items())
+        return text
+
+    def uncertainty_method(self) -> str:
+        """How the ± was obtained, for the export: method, correlations and any MC check."""
+        if self.uncertainty is None:
+            return "no uncertainty entered"
+        text = "first-order, correlated inputs" if self.correlations else "first-order, independent inputs"
+        mc = self.monte_carlo
+        if mc:
+            text += (f"; Monte Carlo mean {mc.get('mean', float('nan')):.5g}, SD {mc.get('sd', float('nan')):.3g}, "
+                     f"95 % {mc.get('low', float('nan')):.5g} – {mc.get('high', float('nan')):.5g} "
+                     f"({int(mc.get('n', 0))} draws, seed {int(mc.get('seed', 0))})")
+        return text
 
 
 @dataclass(frozen=True)
@@ -78,6 +120,8 @@ class Snapshot:
     runs: tuple
     manual: tuple
     next_run_id: int
+    workspace: object = None              # a Workspace; replaced (never mutated) on every edit
+    notebook: tuple = ()
 
 
 HISTORY_LIMIT = 50
@@ -93,6 +137,8 @@ class Session(QObject):
     status = Signal(str, str)          # message, level: info | success | warning | error
     busy = Signal(bool, str)
     history_changed = Signal()
+    workspace_changed = Signal()
+    notebook_changed = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -102,6 +148,9 @@ class Session(QObject):
         self.project_name: str = "Untitled session"
         self.author: str = ""
         self.settings: dict[str, Any] = self._load_settings()
+        self.workspace: W.Workspace = W.Workspace()
+        self.workspace.actor = self.author
+        self.notebook: list[NoteEntry] = []
         self._next_run_id = 1
         self._history: list[Snapshot] = [self._snapshot("Empty session")]
         self._history_index = 0
@@ -110,7 +159,7 @@ class Session(QObject):
     # -- undo / redo ---------------------------------------------------------
     def _snapshot(self, label: str) -> Snapshot:
         return Snapshot(label, tuple(self.datasets), tuple(self.runs), tuple(self.manual),
-                        self._next_run_id)
+                        self._next_run_id, self.workspace, tuple(self.notebook))
 
     def _record(self, label: str) -> None:
         """Remember the state *after* an action, so undo steps back to before it."""
@@ -161,10 +210,19 @@ class Session(QObject):
             datasets_differ = tuple(self.datasets) != snapshot.datasets
             runs_differ = tuple(self.runs) != snapshot.runs
             manual_differ = tuple(self.manual) != snapshot.manual
+            workspace_differs = self.workspace is not snapshot.workspace
+            notebook_differs = tuple(self.notebook) != snapshot.notebook
             self.datasets = list(snapshot.datasets)
             self.runs = list(snapshot.runs)
             self.manual = list(snapshot.manual)
             self._next_run_id = snapshot.next_run_id
+            if snapshot.workspace is not None:
+                self.workspace = snapshot.workspace
+            self.notebook = list(snapshot.notebook)
+            if workspace_differs:
+                self.workspace_changed.emit()
+            if notebook_differs:
+                self.notebook_changed.emit()
             if datasets_differ:
                 self.datasets_changed.emit()
             if runs_differ:
@@ -225,6 +283,7 @@ class Session(QObject):
             self.theme_changed.emit(str(value))
         if key == "author":
             self.author = str(value)
+            self.workspace.actor = self.author
 
     @property
     def theme(self) -> str:
@@ -267,6 +326,10 @@ class Session(QObject):
         self._next_run_id += 1
         self.runs.append(run)
         if record:
+            ws = self.workspace.copy()
+            detail = f"from {Path(run.source).name}" if run.source else "from pasted or generated data"
+            ws.log("run analysed", f"run:{run.key}", detail)
+            self.workspace = ws
             self._record(f"analyse “{sample}” as {measurement.name}")
         self.runs_changed.emit()
         return run
@@ -291,12 +354,44 @@ class Session(QObject):
         """Re-running with new settings replaces the Run, so undo restores the old one."""
         index = self.runs.index(run)
         self.runs[index] = Run(run.run_id, run.sample, run.measurement, result,
-                               run.dataset_name, run.source, options, run.mapping, run.created)
+                               run.dataset_name, run.source, options, run.mapping, run.created, run.uid)
         self._record(f"re-run “{run.sample}” with new settings")
         self.runs_changed.emit()
 
     def run_by_id(self, run_id: int) -> Run | None:
         return next((r for r in self.runs if r.run_id == run_id), None)
+
+    # -- workspace -------------------------------------------------------------
+    def edit_workspace(self, label: str, change) -> Any:
+        """Apply `change(workspace)` to a copy; keep it only if it succeeds. Undoable.
+
+        Copy-on-write keeps undo cheap and correct: snapshots hold the old Workspace
+        object, which no later edit ever touches. Raises whatever `change` raises.
+        """
+        ws = self.workspace.copy()
+        ws.actor = self.author
+        result = change(ws)
+        self.workspace = ws
+        self._record(label)
+        self.workspace_changed.emit()
+        return result
+
+    # -- notebook ----------------------------------------------------------------
+    def add_note(self, text: str, links: tuple[str, ...] = ()) -> NoteEntry | None:
+        text = (text or "").strip()
+        if not text:
+            return None
+        entry = NoteEntry(datetime.now().isoformat(timespec="seconds"), text, self.author, tuple(links))
+        self.notebook.append(entry)
+        self._record("add a notebook entry")
+        self.notebook_changed.emit()
+        return entry
+
+    def remove_note(self, index: int) -> None:
+        if 0 <= index < len(self.notebook):
+            self.notebook.pop(index)
+            self._record("remove a notebook entry")
+            self.notebook_changed.emit()
 
     # -- manual calculations -------------------------------------------------
     def add_manual(self, calc: ManualCalc) -> None:
@@ -315,21 +410,30 @@ class Session(QObject):
     # -- project save / load -------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         """A project file: the analysed curves and results, not the raw imports."""
+        from .. import __version__
         return {
             "format": "aerolab-session",
-            "version": 1,
+            "version": W.SCHEMA_VERSION,
+            "schema_version": W.SCHEMA_VERSION,
+            "app_version": __version__,
             "saved": datetime.now().isoformat(timespec="seconds"),
             "project": self.project_name,
             "author": self.author,
+            "workspace": self.workspace.to_dict(),
+            "notebook": [{"time": n.time, "text": n.text, "author": n.author, "links": list(n.links)}
+                         for n in self.notebook],
             "runs": [
                 {
+                    "uid": r.uid,
                     "sample": r.sample,
                     "measurement": r.measurement.id,
                     "dataset": r.dataset_name,
                     "source": r.source,
                     "options": {k: _jsonable(v) for k, v in r.options.items()},
+                    "mapping": {k: v for k, v in r.mapping.items()},
                     "metrics": [{"name": m.name, "value": _jsonable(m.value),
-                                 "unit": m.unit, "note": m.note} for m in r.result.metrics],
+                                 "unit": m.unit, "note": m.note, "se": _jsonable(m.se)}
+                                for m in r.result.metrics],
                     "curves": {k: [list(map(_jsonable, np.asarray(x, float).ravel())),
                                    list(map(_jsonable, np.asarray(y, float).ravel()))]
                                for k, (x, y) in r.result.curves.items()},
@@ -341,6 +445,8 @@ class Session(QObject):
                  "value": _jsonable(c.value), "inputs": {k: _jsonable(v) for k, v in c.inputs.items()},
                  "uncertainty": _jsonable(c.uncertainty),
                  "input_uncertainties": {k: _jsonable(v) for k, v in c.input_uncertainties.items()},
+                 "correlations": {k: _jsonable(v) for k, v in c.correlations.items()},
+                 "monte_carlo": {k: _jsonable(v) for k, v in c.monte_carlo.items()},
                  "reference": c.reference}
                 for c in self.manual
             ],
@@ -361,7 +467,13 @@ class Session(QObject):
         payload = json.loads(p.read_text(encoding="utf-8"))
         if payload.get("format") != "aerolab-session":
             raise ValueError(f"{p.name} is not an AeroLab session file")
+        return self.load_payload(payload, p.stem, p.name)
 
+    def load_payload(self, payload: dict[str, Any], stem: str, display: str) -> int:
+        """Replace the session with a saved one (already parsed). Older schemas are migrated."""
+        from ..core.curves import AnalysisResult as AR, Metric
+
+        payload, migration_notes = W.migrate(payload)
         self.runs = []
         self.manual = []
         loaded = 0
@@ -371,13 +483,18 @@ class Session(QObject):
             except KeyError:
                 continue
             metrics = [Metric(m["name"], _float(m.get("value")), m.get("unit", ""),
-                              m.get("note", "")) for m in entry.get("metrics", [])]
+                              m.get("note", ""), None if m.get("se") is None else _float(m.get("se")))
+                       for m in entry.get("metrics", [])]
             curves = {k: (np.asarray(v[0], dtype=float), np.asarray(v[1], dtype=float))
                       for k, v in entry.get("curves", {}).items() if len(v) == 2}
             result = AR(measurement.id, metrics, curves, {"measurement": measurement.id})
+            mapping = {k: (int(v) if isinstance(v, (int, float)) else None)
+                       for k, v in (entry.get("mapping") or {}).items()}
+            extra = {"uid": str(entry["uid"])} if entry.get("uid") else {}
             self.add_run(entry.get("sample", "sample"), measurement, result, record=False,
                          dataset_name=entry.get("dataset", ""), source=entry.get("source", ""),
-                         options=M.upgrade_options(measurement.id, entry.get("options", {})))
+                         options=M.upgrade_options(measurement.id, entry.get("options", {})),
+                         mapping=mapping, **extra)
             loaded += 1
 
         for entry in payload.get("manual", []):
@@ -390,14 +507,71 @@ class Session(QObject):
                 _float(entry.get("value")), entry.get("unit", ""), entry.get("reference", ""),
                 uncertainty=None if sigma is None else _float(sigma),
                 input_uncertainties={k: _float(v) for k, v in
-                                     entry.get("input_uncertainties", {}).items()}))
-        self._record(f"open session “{p.stem}”")
+                                     entry.get("input_uncertainties", {}).items()},
+                correlations={k: _float(v) for k, v in entry.get("correlations", {}).items()},
+                monte_carlo={k: _float(v) for k, v in entry.get("monte_carlo", {}).items()}))
+        self.workspace = W.Workspace.from_dict(payload.get("workspace"))
+        self.workspace.actor = self.author
+        self._relink_legacy_runs(payload)
+        self.notebook = [NoteEntry(str(n.get("time", "")), str(n.get("text", "")), str(n.get("author", "")),
+                                   tuple(n.get("links", ()))) for n in payload.get("notebook", [])
+                         if isinstance(n, dict)]
+        self._record(f"open session “{stem}”")
         self.manual_changed.emit()
+        self.workspace_changed.emit()
+        self.notebook_changed.emit()
 
-        self.project_name = payload.get("project") or p.stem
+        self.project_name = payload.get("project") or stem
         self.author = payload.get("author", self.author)
-        self.status.emit(f"Loaded {loaded} run(s) from {p.name}", "success")
+        self.last_migration_notes = migration_notes
+        extra = f" ({migration_notes[0]})" if migration_notes else ""
+        self.status.emit(f"Loaded {loaded} run(s) from {display}{extra}", "success")
         return loaded
+
+    def _relink_legacy_runs(self, payload: dict[str, Any]) -> None:
+        """Files saved before runs had a uid linked them by "dataset::measurement".
+
+        Such a link is moved to the new uid only when exactly one run has that legacy key;
+        an ambiguous link is left as it was and recorded in the lineage instead of being
+        guessed."""
+        no_uid = [r for r, e in zip(self.runs, payload.get("runs", [])) if not e.get("uid")]
+        if not no_uid:
+            return
+        by_legacy: dict[str, list[Run]] = {}
+        for r in no_uid:
+            by_legacy.setdefault(r.legacy_key, []).append(r)
+        for exp in self.workspace.experiments.values():
+            new_keys = []
+            for k in exp.run_keys:
+                runs = by_legacy.get(k, [])
+                if len(runs) == 1:
+                    new_keys.append(runs[0].uid)
+                else:
+                    new_keys.append(k)
+                    if len(runs) > 1:
+                        self.workspace.log("ambiguous run link kept", f"run:{k}",
+                                           f"{len(runs)} runs share this legacy key; relink by hand")
+            exp.run_keys = new_keys
+
+    # -- portable archive --------------------------------------------------------
+    def save_archive(self, path: str | Path) -> tuple[Path, list[str]]:
+        """Session plus every attached file, in one verifiable zip (.aerolabz)."""
+        from .. import __version__
+        ws = self.workspace.copy()
+        ws.log("archive exported", "session", Path(path).name)
+        self.workspace = ws
+        out, problems = W.export_archive(self.to_dict(), self.workspace, path, __version__)
+        level = "warning" if problems else "success"
+        self.status.emit(f"Archive written to {out.name}" + (f" — {len(problems)} file(s) left out"
+                                                             if problems else ""), level)
+        return out, problems
+
+    def open_archive(self, path: str | Path, extract_to: str | Path | None = None) -> tuple[int, list[str]]:
+        p = Path(path)
+        dest = Path(extract_to) if extract_to else p.with_name(p.stem + "_attachments")
+        payload, notes = W.import_archive(p, dest)
+        loaded = self.load_payload(payload, p.stem, p.name)
+        return loaded, notes
 
     # -- summary -------------------------------------------------------------
     def counts(self) -> dict[str, int]:

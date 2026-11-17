@@ -12,13 +12,13 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout,
                                QHeaderView, QLabel, QListWidget, QListWidgetItem,
-                               QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
+                               QPushButton, QSplitter, QTableView, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
 from ...core import measurements as M
 from ...io import readers as R
 from ...io.readers import Dataset, ImportError_
-from ..widgets import Card, DropZone, EmptyState, HLine, Pill, ResultTable
+from ..widgets import Card, DatasetModel, DropZone, EmptyState, HLine, Pill, ResultTable
 from .base import Page
 
 __all__ = ["DataPage"]
@@ -89,7 +89,13 @@ class DataPage(Page):
         self.meta_label.setObjectName("Hint")
         self.meta_label.setWordWrap(True)
         self.detail.body.addWidget(self.meta_label)
-        self.preview = QTableWidget(0, 0)
+        # A model/view table that streams rows on demand: every row of a long file is
+        # browsable without building one widget item per cell up front.
+        self.preview_model = DatasetModel()
+        self.preview = QTableView()
+        self.preview.setModel(self.preview_model)
+        self.preview.setAccessibleName("Data preview")
+        self.preview.setTabKeyNavigation(False)
         self.preview.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.preview.setAlternatingRowColors(True)
         self.preview.verticalHeader().setDefaultSectionSize(25)
@@ -135,6 +141,16 @@ class DataPage(Page):
         run_row.addStretch(1)
         self.mapping_card.body.addLayout(run_row)
         right_layout.addWidget(self.mapping_card)
+
+        self.overview_card = Card("All files at a glance",
+                                  "The measurement each file would be analysed as, how its columns map, and any "
+                                  "import warnings, before anything is run.")
+        self.overview = ResultTable(["Dataset", "Measurement guess", "Mapped", "Guessed by position",
+                                     "Import warnings"])
+        self.overview.setMinimumHeight(120)
+        self.overview.cellDoubleClicked.connect(lambda r, _c: self.file_list.setCurrentRow(r))
+        self.overview_card.body.addWidget(self.overview)
+        right_layout.addWidget(self.overview_card)
 
         split.addWidget(right)
         split.setStretchFactor(0, 2)
@@ -200,6 +216,25 @@ class DataPage(Page):
         has = bool(self.session.datasets)
         for btn in (self.btn_remove, self.btn_clear, self.btn_analyse, self.btn_analyse_all):
             btn.setEnabled(has)
+        self._fill_overview()
+
+    def _fill_overview(self) -> None:
+        rows = []
+        for ds in self.session.datasets:
+            scores = {m.id: _match_score(m, ds) + _name_score(m, ds.name) for m in M.MEASUREMENTS}
+            best = max(scores, key=lambda k: (scores[k], -_index_of(k)))
+            warn = "; ".join(ds.meta.get("warnings", [])) or "—"
+            if scores[best] <= 0:
+                rows.append((ds.name, "not identified", "—", "—", warn))
+                continue
+            m = M.get(best)
+            mapping = m.match_columns(ds.headers)
+            guessed = M.guessed_channels(m, ds.headers, mapping)
+            mapped = ", ".join(f"{c.label} ← {ds.label(mapping[c.key])}" for c in m.channels
+                               if mapping.get(c.key) is not None)
+            rows.append((ds.name, m.name, mapped or "—",
+                         ", ".join(m.channel(k).label for k in guessed) or "none", warn))
+        self.overview.fill(rows)
 
     def current_dataset(self) -> Dataset | None:
         row = self.file_list.currentRow()
@@ -229,23 +264,9 @@ class DataPage(Page):
             bits.append(f"{len(ds.meta['preamble'])} header lines skipped")
         self.meta_label.setText(" · ".join(bits))
 
-        self.preview.clear()
-        self.preview.setColumnCount(ds.n_cols)
-        self.preview.setHorizontalHeaderLabels(ds.labels())
-        n = min(ds.n_rows, 40)
-        self.preview.setRowCount(n)
-        for c in range(ds.n_cols):
-            col = ds.columns[c]
-            text_col = ds.text_columns.get(ds.headers[c])
-            for r in range(n):
-                if text_col is not None and r < len(text_col):
-                    text = text_col[r]
-                else:
-                    value = col[r] if r < col.size else float("nan")
-                    text = "" if value != value else f"{value:.6g}"
-                item = QTableWidgetItem(text)
-                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.preview.setItem(r, c, item)
+        if ds.meta.get("warnings"):
+            self.meta_label.setText(self.meta_label.text() + "\n⚠ " + "\n⚠ ".join(ds.meta["warnings"]))
+        self.preview_model.set_dataset(ds)
         self.preview.resizeColumnsToContents()
 
         self._guess_measurement(ds)
@@ -254,9 +275,7 @@ class DataPage(Page):
     def _clear_detail(self) -> None:
         self.detail.set_title("Preview")
         self.meta_label.setText("Nothing imported yet.")
-        self.preview.clear()
-        self.preview.setRowCount(0)
-        self.preview.setColumnCount(0)
+        self.preview_model.set_dataset(None)
         self.map_table.setRowCount(0)
         self.confidence.setText("—")
 

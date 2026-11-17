@@ -19,8 +19,10 @@ Built from:
 
 | | |
 |---|---|
-| **59 equations** | The relations used in the three papers, with unit conversion on every input and first-order uncertainty propagation (independent inputs). |
-| **11 measurements** | Stress–strain, cyclic loading, S–N, strain–life, density scaling, TGA, DSC, thermal properties, BET, Herschel–Bulkley, amplitude sweep. |
+| **59 equations** | The relations used in the three papers, with unit conversion on every input. Uncertainty is propagated to first order, with an optional correlation matrix, and can be cross-checked by Monte Carlo. Every equation has an independent oracle test (`docs/EQUATION_REGRESSION_REPORT.md`). |
+| **14 measurements** | Stress–strain, cyclic loading, S–N, strain–life, density scaling, stress relaxation, creep, TGA, DSC, thermal properties, k versus density, BET, Herschel–Bulkley, amplitude sweep. |
+| **Workspace** | Samples (composition, spinning and drying parameters, densities, geometry, thermal history, replicates), experiments with instrument and calibration records, attached files recorded with SHA-256, and a chain-of-custody log. Portable `.aerolabz` archives. |
+| **Studios** | Mechanics (window sensitivity, cycle energies, fatigue model comparison with bootstrap, viscoelastic models), Materials (TGA steps, DSC events, porosity summary, LVER, QC flags), Explorer (batch statistics, response surface, sensitivity, π groups, DOE suggestions, report, export verification). |
 | **Automatic import** | CSV, TSV, TXT, DAT, Excel (.xlsx), JSON, NumPy archives. Instrument preambles, unit rows, European decimals and multi-sheet workbooks are handled; columns are matched to the measurement by name and converted to the unit the analysis needs. Columns that had to be guessed are flagged. |
 | **Origin export** | Styled workbooks (Long Name / Units / Comments) and graphs with publication colours and symbols, saved as a `.opju` project with PNG exports. No Origin on the machine? It writes a LabTalk package that rebuilds the same project elsewhere. |
 | **Excel export** | Summary, one sheet per dataset with its curves, native Excel charts, the validation table, and a provenance sheet recording versions, files and settings. |
@@ -77,10 +79,16 @@ aerolab/
     curves.py         the analysers: fits, peaks, integrals
     measurements.py   what each experiment needs, and what it plots
     validation.py     26 reference cases (printed values, physics checks, discrepancies)
+    uncertainty.py    covariance-aware propagation and Monte Carlo
+    workspace.py      samples, experiments, attachments, lineage, migrations, archives
+    mechanics.py      sensitivity, fatigue model comparison, viscoelastic models
+    materials.py      TGA steps, DSC events, k–density, porosity summary, LVER, QC
+    explorer.py       statistics, response surface, π groups, DOE, export verification
   io/
     readers.py        delimiter sniffing, unit rows, Excel, JSON, NPZ
     excel.py          the formatted workbook with native charts
     origin.py         live Origin automation, and the LabTalk fallback
+    report.py         publishable HTML/Markdown report with provenance
   viz/
     style.py          the palette and symbol set, shared with Origin
     figures.py        matplotlib rendering
@@ -88,8 +96,8 @@ aerolab/
     app.py            main window, navigation, command palette
     state.py          the session, with undo/redo
     widgets.py        cards, tiles, toasts, plot canvas, formula rendering
-    pages/            one file per page
-  resources/samples/  the eleven demo datasets
+    pages/            one file per page (workspace, notebook, mechanics, materials, explorer…)
+  resources/samples/  the demo datasets (two are marked SYNTHETIC)
 tests/                pytest suite
 docs/USER_GUIDE.md    the longer guide
 ```

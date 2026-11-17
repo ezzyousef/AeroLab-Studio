@@ -14,17 +14,24 @@ from .. import __version__
 from .state import Session
 from . import theme as T
 from .pages import (AboutPage, CalculatorPage, DataPage, ExportPage, HomePage, MeasurePage,
-                    PlotsPage, SettingsPage, ValidationPage)
+                    PlotsPage, SettingsPage, ValidationPage, WorkspacePage, MechanicsPage,
+                    MaterialsPage, ExplorerPage, NotebookPage)
 from .widgets import CommandPalette, ToastHost, icon_label
 
 __all__ = ["MainWindow", "run"]
 
 PAGES = [
+    # grouped by task: bring data in and describe it, analyse it, dig deeper, hand it on
     ("home", HomePage, "Session"),
     ("data", DataPage, "Session"),
+    ("workspace", WorkspacePage, "Session"),
+    ("notebook", NotebookPage, "Session"),
     ("calculator", CalculatorPage, "Analyse"),
     ("measure", MeasurePage, "Analyse"),
     ("plots", PlotsPage, "Analyse"),
+    ("mechanics", MechanicsPage, "Studios"),
+    ("materials", MaterialsPage, "Studios"),
+    ("explorer", ExplorerPage, "Studios"),
     ("export", ExportPage, "Output"),
     ("validation", ValidationPage, "Output"),
     ("settings", SettingsPage, "Output"),
@@ -48,7 +55,16 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         self.rail = self._build_rail()
-        layout.addWidget(self.rail)
+        # Fourteen pages do not fit a 600 px tall window at 150 % scaling: let the rail scroll.
+        from PySide6.QtWidgets import QScrollArea
+        rail_scroll = QScrollArea()
+        rail_scroll.setObjectName("NavRailScroll")
+        rail_scroll.setWidget(self.rail)
+        rail_scroll.setWidgetResizable(True)
+        rail_scroll.setFrameShape(QFrame.NoFrame)
+        rail_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        rail_scroll.setFixedWidth(self.rail.width() + 14)
+        layout.addWidget(rail_scroll)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
@@ -167,6 +183,8 @@ class MainWindow(QMainWindow):
             (None, None, None),
             ("&Save session…", QKeySequence.Save, self.save_session),
             ("&Open session…", "Ctrl+Shift+O", self.open_session),
+            ("Save &archive with attachments…", None, lambda: self._page_action("workspace", "save_archive")),
+            ("Open a&rchive…", None, lambda: self._page_action("workspace", "open_archive")),
             (None, None, None),
             ("Export to &Excel…", "Ctrl+E", lambda: self._page_action("export", "export_excel")),
             ("Export to &Origin…", "Ctrl+R", lambda: self._page_action("export", "export_origin")),
@@ -212,6 +230,9 @@ class MainWindow(QMainWindow):
         about = QAction("&About AeroLab Studio", self)
         about.triggered.connect(lambda: self.go_to("about"))
         help_menu.addAction(about)
+        licence_action = QAction("&Licence…", self)
+        licence_action.triggered.connect(self.show_licence)
+        help_menu.addAction(licence_action)
         guide = QAction("&User guide", self)
         guide.triggered.connect(self.open_guide)
         help_menu.addAction(guide)
@@ -309,6 +330,13 @@ class MainWindow(QMainWindow):
              lambda: self._page_action("data", "analyse_all")),
             ("Save session", "File", self.save_session),
             ("Open session", "File", self.open_session),
+            ("Save archive with attachments", "File", lambda: self._page_action("workspace", "save_archive")),
+            ("Open archive", "File", lambda: self._page_action("workspace", "open_archive")),
+            ("New sample", "Workspace", lambda: self._page_action("workspace", "new_sample")),
+            ("Write publishable report", "Output", lambda: self._page_action("explorer", "write_report")),
+            ("Verify an Excel export against the session", "Output",
+             lambda: self._page_action("explorer", "verify_excel")),
+            ("Verify attached files", "Workspace", lambda: self._page_action("workspace", "verify_files")),
             ("Export to Excel", "Output", lambda: self._page_action("export", "export_excel")),
             ("Export to Origin", "Output", lambda: self._page_action("export", "export_origin")),
             ("Write LabTalk package", "Output",
@@ -321,6 +349,7 @@ class MainWindow(QMainWindow):
             ("Clear all runs", "Session", self.session.clear_runs),
             ("Clear imported datasets", "Session", self.session.clear_datasets),
             ("About AeroLab Studio", "Help", self.show_about),
+            ("Licence…", "Help", self.show_licence),
         ]
         palette = CommandPalette(commands, self)
         palette.show_centred()
@@ -356,6 +385,14 @@ class MainWindow(QMainWindow):
             f"<p>{len(E.REGISTRY)} equations · {len(M.MEASUREMENTS)} measurements · "
             "OriginLab and Excel export.</p>"
             "<p>Built from Omranpour <i>et al.</i> (2024a, 2024b, 2025).</p>")
+
+    def show_licence(self):
+        """Edition, status and offline activation. Window-modal but non-blocking."""
+        from .licence_dialog import LicenceDialog
+        dialog = LicenceDialog(self)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.open()
+        return dialog
 
     def open_guide(self) -> None:
         from PySide6.QtGui import QDesktopServices
@@ -456,10 +493,23 @@ def _claim_taskbar_identity() -> None:
         pass
 
 
+def configure_high_dpi() -> None:
+    """Fractional scaling (125 %, 150 %) is passed through instead of rounded.
+
+    Qt 6 scales by default but rounds 1.5 to 2, which makes text and plots oversized on
+    common laptop settings. Must run before the QApplication is created.
+    """
+    from PySide6.QtGui import QGuiApplication
+    if QGuiApplication.instance() is None:
+        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+
+
 def run(argv: list[str] | None = None) -> int:
     """Start the application."""
     argv = list(argv if argv is not None else sys.argv)
     _claim_taskbar_identity()
+    configure_high_dpi()
     QApplication.setAttribute(Qt.AA_DontUseNativeMenuBar, False)
     app = QApplication.instance() or QApplication(argv)
     app.setApplicationName("AeroLab Studio")
@@ -474,7 +524,7 @@ def run(argv: list[str] | None = None) -> int:
     # Files passed on the command line are imported once the window is up.
     files = [a for a in argv[1:] if not a.startswith("-") and Path(a).exists()]
     if files:
-        sessions = [f for f in files if f.lower().endswith(".aerolab")]
+        sessions = [f for f in files if f.lower().endswith((".aerolab", ".aerolabz"))]
         data_files = [f for f in files if f not in sessions]
         QTimer.singleShot(120, lambda: _open_startup_files(window, sessions, data_files))
     return app.exec()
@@ -484,8 +534,12 @@ def _open_startup_files(window: MainWindow, sessions: list[str], data_files: lis
     """Handle whatever was double-clicked or passed on the command line."""
     for path in sessions[:1]:                 # a session replaces the state, so take one
         try:
-            window.session.load_project(path)
-            window.go_to("measure")
+            if path.lower().endswith(".aerolabz"):
+                window.session.open_archive(path)
+                window.go_to("workspace")
+            else:
+                window.session.load_project(path)
+                window.go_to("measure")
         except Exception as exc:              # noqa: BLE001 - reported in the UI
             window.session.status.emit(f"Could not open {Path(path).name}: {exc}", "error")
     if data_files:

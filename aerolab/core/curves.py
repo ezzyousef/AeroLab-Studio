@@ -175,6 +175,12 @@ def analyze_stress_strain(strain_pct: Sequence[float], stress_mpa: Sequence[floa
 
     yield_note = (f"{offset_yield * 100:.1f} % offset" if offset_yield > 0 else
                   "offset yield switched off (rarely meaningful for elastomers)")
+    sensitivity = None
+    try:
+        from .mechanics import modulus_sensitivity
+        sensitivity = modulus_sensitivity(e, s)
+    except ValueError:
+        pass
     metrics = [
         Metric("Young's modulus", modulus, "MPa", f"linear fit {window[0]:.2f}–{window[1]:.2f} % strain, R² = {r2:.4f}"),
         Metric("Ultimate tensile strength", uts, "MPa"),
@@ -185,13 +191,19 @@ def analyze_stress_strain(strain_pct: Sequence[float], stress_mpa: Sequence[floa
         Metric("Yield strain", yield_strain, "%"),
         Metric("Resilience", resilience, "MJ/m^3", "area up to yield"),
     ]
+    if sensitivity is not None:
+        metrics.append(Metric(
+            "Modulus window sensitivity", sensitivity["cv_pct"], "%",
+            f"coefficient of variation of E over {len(sensitivity['windows'])} windows in the first 40 % of the "
+            f"strain at UTS: {sensitivity['min']:.3g}–{sensitivity['max']:.3g} MPa. Above ~10 % the modulus "
+            "depends on the window chosen"))
     curves = {
         "stress-strain": (e, s),
         "modulus fit": (np.array(window), np.array(window) / 100.0 * modulus),
     }
     return AnalysisResult("stress_strain", metrics, curves,
                           {"points": int(e.size), "modulus_window": window, "modulus_r2": r2,
-                           "break_index": int(i_break)})
+                           "break_index": int(i_break), "modulus_sensitivity": sensitivity})
 
 
 def _auto_modulus(e: np.ndarray, s: np.ndarray, min_window: int,
@@ -313,6 +325,7 @@ def analyze_cyclic_tension(strain_pct: Sequence[float], stress_mpa: Sequence[flo
         er = peak_strain - ps if math.isfinite(ps) else float("nan")
         rows.append({
             "cycle": n, "peak_strain": peak_strain, "peak_stress": peak_stress,
+            "loading_energy": abs(area_load), "unloading_energy": abs(area_unload),
             "permanent_set": ps, "elastic_recovery": er,
             "er_ratio": er / peak_strain * 100.0 if peak_strain else float("nan"),
             "hysteresis_energy": hysteresis,
@@ -341,6 +354,10 @@ def analyze_cyclic_tension(strain_pct: Sequence[float], stress_mpa: Sequence[flo
                if first["peak_stress"] else float("nan"), "%", "drop in peak stress from first to last cycle"),
         Metric("Ratcheting strain, last cycle", (last["peak_strain"] + last["permanent_set"]) / 2.0, "%",
                "εr = (εmax + εmin)/2, with εmin taken as the cycle's permanent set"),
+        Metric("Cumulative dissipated energy", float(sum(r["hysteresis_energy"] for r in rows)), "MJ/m^3",
+               "sum of the hysteresis loop areas over every detected cycle"),
+        Metric("Dissipation ratio, cycle 1", first["dissipation_ratio"], "%",
+               "hysteresis energy as a share of the loading work"),
     ]
     return AnalysisResult("cyclic_tension", metrics, loops, {"per_cycle": rows})
 
@@ -392,9 +409,14 @@ def fit_sn_basquin(cycles: Sequence[float], stress_amplitude: Sequence[float], *
     f = _life_on_stress(2.0 * n, sa)
     b, sigma_f = f["exp"], f["coef"]
     two_n = 2.0 * n
-    grid = np.logspace(np.log10(two_n.min() * 0.5), np.log10(two_n.max() * 2.0), 200)
+    # The fitted line is drawn over the tested lives only: beyond them it is an extrapolation.
+    grid = np.logspace(np.log10(two_n.min()), np.log10(two_n.max()), 200)
     frac = float(life_at_fraction)
     life = float(0.5 * frac ** (1.0 / b)) if 0 < frac < 1 else float("nan")
+    inside = bool(math.isfinite(life) and n.min() <= life <= n.max())
+    life_note = ("within the tested lives" if inside else
+                 f"OUTSIDE the tested lives ({n.min():.3g}–{n.max():.3g} cycles): an extrapolation, "
+                 "not a prediction the data support")
     ci = lambda se: f"95 % CI ± {f['t'] * se:.3g}" if math.isfinite(f["t"]) else "too few points for a CI"  # noqa: E731
     metrics = [
         Metric("Fatigue strength coefficient σ'f", sigma_f, "MPa",
@@ -402,12 +424,13 @@ def fit_sn_basquin(cycles: Sequence[float], stress_amplitude: Sequence[float], *
         Metric("Fatigue strength exponent b", b, "-", f"± {f['se_exp']:.3g} (1 SE); {ci(f['se_exp'])}",
                se=f["se_exp"]),
         Metric("R²", f["r2"], "-", "of log 2N on log σa"),
-        Metric(f"Predicted life at {frac * 100:g} % of σ'f", life, "cycles",
-               "extrapolation of the fitted line — check it lies within the tested range"),
+        Metric(f"Predicted life at {frac * 100:g} % of σ'f", life, "cycles", life_note),
     ]
     return AnalysisResult("sn_curve", metrics,
                           {"data": (two_n, sa), "fit": (grid, sigma_f * grid ** b)},
-                          {"sigma_f": sigma_f, "b": b, "x_is_reversals": True})
+                          {"sigma_f": sigma_f, "b": b, "x_is_reversals": True,
+                           "calibration_range": (float(two_n.min()), float(two_n.max())),
+                           "prediction_inside_range": inside})
 
 
 def fit_strain_life(cycles: Sequence[float], elastic_amplitude: Sequence[float],
@@ -459,8 +482,10 @@ def fit_strain_life(cycles: Sequence[float], elastic_amplitude: Sequence[float],
     nt_note = "below 1 reversal means elastic strain dominates at every practical life"
     if math.isfinite(lo_nt):
         nt_note = f"95 % bootstrap interval {lo_nt:.3g}–{hi_nt:.3g}; " + nt_note
+    if math.isfinite(two_nt) and not (two_n.min() <= two_nt <= two_n.max()):
+        nt_note += f"; lies outside the tested range ({two_n.min():.3g}–{two_n.max():.3g} reversals)"
 
-    grid = np.logspace(np.log10(max(two_n.min() * 0.5, 1e-3)), np.log10(two_n.max() * 5.0), 240)
+    grid = np.logspace(np.log10(two_n.min()), np.log10(two_n.max()), 240)    # tested range only
     metrics = [
         Metric("σ'f / E", sigma_f_over_E, "-", f"± {el['se_coef']:.3g} (1 SE)", se=el["se_coef"]),
         *([Metric("Fatigue strength coefficient σ'f", sigma_f, "MPa",
@@ -528,9 +553,17 @@ def analyze_tga(temperature: Sequence[float], weight_pct: Sequence[float], *,
     metrics.append(Metric("Total mass loss", float(loss[-1]), "%", basis_note))
     metrics.append(Metric("Onset temperature", _onset_temperature(T, w), "°C",
                           "steepest-descent tangent meets the initial plateau level (mean of the first 5 % of points)"))
+    from .materials import tga_steps
+    steps = tga_steps(T, w)
+    metrics.append(Metric("Decomposition steps", float(len(steps)), "steps",
+                          "split at the valleys of the DTG curve; steps under 1 % are merged"))
+    for i, st in enumerate(steps, start=1):
+        metrics.append(Metric(f"Step {i} mass loss", st["loss"], "%",
+                              f"{st['start']:.0f}–{st['end']:.0f} °C, DTG peak {st['peak']:.0f} °C "
+                              "(% of the initial weight)"))
 
     curves = {"TGA": (T, w), "DTG": (T, dtg_s), "mass loss": (T, loss)}
-    return AnalysisResult("tga", metrics, curves, {"peaks": [float(T[p]) for p in peaks]})
+    return AnalysisResult("tga", metrics, curves, {"peaks": [float(T[p]) for p in peaks], "steps": steps})
 
 
 def _merge_duplicate_x(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -834,8 +867,13 @@ def _rouquerol_problems(x: np.ndarray, v: np.ndarray, f: dict) -> list[str]:
 def analyze_sorption_bet(p_p0: Sequence[float], volume_stp: Sequence[float], *,
                          bet_range: tuple[float, float] = (0.05, 0.30),
                          auto_range: bool = False,
-                         pore_volume_at: float = 0.99) -> AnalysisResult:
+                         pore_volume_at: float = 0.99, branch: str = "auto") -> AnalysisResult:
     """Multipoint BET surface area, C constant, Gurvich pore volume and 4V/S pore size.
+
+    `branch` says which branch the points are: "auto" works out adsorption-then-desorption
+    files by the pressure maximum, but a file whose pressure only falls cannot be told
+    apart (a reversed adsorption export or a desorption-only export), so it is refused
+    until the user picks "adsorption" or "desorption". The choice goes into the result.
 
     Only the adsorption branch is used: if the file continues into desorption (pressure
     falling after its maximum), those points are dropped. The fit is checked against the
@@ -849,7 +887,23 @@ def analyze_sorption_bet(p_p0: Sequence[float], volume_stp: Sequence[float], *,
         ok = np.isfinite(x_raw) & np.isfinite(v_raw)
         xr, vr = x_raw[ok], v_raw[ok]
         i_top = int(np.argmax(xr))
-        if i_top < xr.size - 1 and np.any(np.diff(xr[i_top:]) < 0):
+        if branch not in ("auto", "adsorption", "desorption"):
+            raise ValueError(f"sorption: branch must be auto, adsorption or desorption, not {branch!r}")
+        if i_top == 0 and np.all(np.diff(xr) <= 0):
+            # Pressure only falls: order alone cannot say which branch this is (Codex review,
+            # finding 6), so the user must say.
+            if branch == "auto":
+                raise ValueError("sorption: the relative pressure only falls, so this may be a desorption "
+                                 "branch or an adsorption branch listed high-to-low. Choose the branch "
+                                 "(adsorption or desorption) in Settings and run again.")
+            branch_note = (f"points listed high-to-low, declared the {branch} branch by the user; "
+                           "sorted by pressure")
+            if branch == "desorption":
+                branch_note += " (BET is defined on adsorption: treat this surface area with caution)"
+        elif branch == "desorption" and i_top < xr.size - 1 and np.any(np.diff(xr[i_top:]) < 0):
+            branch_note = f"desorption branch used as chosen ({xr.size - i_top} points); BET is defined on adsorption"
+            xr, vr = xr[i_top:], vr[i_top:]
+        elif i_top < xr.size - 1 and np.any(np.diff(xr[i_top:]) < 0):
             branch_note = f"desorption branch ({xr.size - i_top - 1} points) ignored"
             xr, vr = xr[:i_top + 1], vr[:i_top + 1]
         x_raw, v_raw = xr, vr
@@ -925,7 +979,7 @@ def analyze_sorption_bet(p_p0: Sequence[float], volume_stp: Sequence[float], *,
     }
     return AnalysisResult("sorption", metrics, curves,
                           {"slope": f["slope"], "intercept": f["intercept"], "range": (x_lo, x_hi),
-                           "criteria_problems": problems})
+                           "criteria_problems": problems, "branch": branch, "branch_note": branch_note})
 
 
 # ---------------------------------------------------------------------------
@@ -988,18 +1042,26 @@ def find_moduli_crossover(x: Sequence[float], g_storage: Sequence[float],
     ratio = np.log10(gp) - np.log10(gpp)
     cross_log = _interp_crossing(np.log10(xa), ratio, 0.0)
     crossover = float(10.0 ** cross_log) if cross_log is not None else float("nan")
-    g_at_cross = float(np.interp(crossover, xa, gp)) if math.isfinite(crossover) else float("nan")
+    # The crossover is located in log-log space, so read the modulus there too: linear
+    # interpolation between two points a decade apart overstated it by ~0.3 % on a sweep.
+    g_at_cross = (float(10.0 ** np.interp(cross_log, np.log10(xa), np.log10(gp)))
+                  if math.isfinite(crossover) else float("nan"))
     plateau = float(np.median(gp[: max(3, xa.size // 5)]))
+    from .materials import lver_limit
+    lver = lver_limit(xa, gp, tolerance=0.1)
 
     metrics = [
         Metric("Flow point (G′ = G″)", crossover, x_unit, f"{x_label} at the crossover"),
         Metric("Modulus at crossover", g_at_cross, "Pa"),
-        Metric("Plateau G′", plateau, "Pa", "median of the first 20 % of points (not a detected linear viscoelastic region)"),
+        Metric("Plateau G′", plateau, "Pa", "median of the first 20 % of points"),
+        Metric("End of linear viscoelastic region", lver["limit"], x_unit,
+               f"{x_label} where G′ first falls 10 % below the plateau (log–log interpolation)"
+               if math.isfinite(lver["limit"]) else "G′ stays within 10 % of the plateau over the sweep"),
         Metric("tan δ at first point", float(gpp[0] / gp[0]), "-"),
         Metric("Solid-like", 1.0 if gp[0] > gpp[0] else 0.0, "-", "1 = G′ > G″ at low amplitude"),
     ]
     curves = {"G'": (xa, gp), "G''": (xa, gpp)}
-    return AnalysisResult("crossover", metrics, curves, {"crossover": crossover})
+    return AnalysisResult("crossover", metrics, curves, {"crossover": crossover, "lver": lver["limit"]})
 
 
 # ---------------------------------------------------------------------------

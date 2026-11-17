@@ -8,7 +8,7 @@
 ;     pyinstaller AeroLabStudio.spec --noconfirm
 
 #define AppName        "AeroLab Studio"
-#define AppVersion     "1.2.1"
+#define AppVersion     "1.3.0"
 #define AppPublisher   "AeroLab Studio"
 #define AppExe         "AeroLabStudio.exe"
 #define SourceDir      "..\dist\AeroLabStudio"
@@ -68,6 +68,15 @@ Root: HKA; Subkey: "Software\Classes\AeroLabStudio.Session"; ValueType: string; 
 Root: HKA; Subkey: "Software\Classes\AeroLabStudio.Session\DefaultIcon"; \
     ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExe},0"; Tasks: associate
 Root: HKA; Subkey: "Software\Classes\AeroLabStudio.Session\shell\open\command"; \
+    ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" ""%1"""; Tasks: associate
+; 1.3: portable archives (session + attached files)
+Root: HKA; Subkey: "Software\Classes\.aerolabz"; ValueType: string; ValueName: ""; \
+    ValueData: "AeroLabStudio.Archive"; Flags: uninsdeletevalue; Tasks: associate
+Root: HKA; Subkey: "Software\Classes\AeroLabStudio.Archive"; ValueType: string; \
+    ValueName: ""; ValueData: "AeroLab Studio archive"; Flags: uninsdeletekey; Tasks: associate
+Root: HKA; Subkey: "Software\Classes\AeroLabStudio.Archive\DefaultIcon"; \
+    ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExe},0"; Tasks: associate
+Root: HKA; Subkey: "Software\Classes\AeroLabStudio.Archive\shell\open\command"; \
     ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" ""%1"""; Tasks: associate
 
 [Run]

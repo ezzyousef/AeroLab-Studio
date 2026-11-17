@@ -9,6 +9,13 @@ from .export import ExportPage
 from .validation import ValidationPage
 from .settings import SettingsPage
 from .about import AboutPage
+from .workspace import WorkspacePage
+from .mechanics import MechanicsPage
+from .materials import MaterialsPage
+from .explorer import ExplorerPage
+from .notebook import NotebookPage
 
 __all__ = ["Page", "HomePage", "CalculatorPage", "DataPage", "MeasurePage", "PlotsPage",
-           "ExportPage", "ValidationPage", "SettingsPage", "AboutPage"]
+           "ExportPage", "ValidationPage", "SettingsPage", "AboutPage",
+           "WorkspacePage", "MechanicsPage", "MaterialsPage", "ExplorerPage",
+           "NotebookPage"]

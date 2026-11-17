@@ -204,7 +204,9 @@ def _manual_sheet(book, fmt, report: ExcelReport) -> None:
     ws.write(0, 0, "Manual calculations", fmt["title"])
     ws.write(1, 0, "Every equation evaluated in the Calculator, with its inputs.", fmt["subtitle"])
     ws.set_column("F:F", 14)
-    for c, h in enumerate(["Equation", "Inputs", "Result", "Unit", "Reference", "± (1σ)"]):
+    ws.set_column("G:G", 60)
+    for c, h in enumerate(["Equation", "Inputs", "Result", "Unit", "Reference", "± (1σ)",
+                           "Uncertainty method"]):
         ws.write(3, c, h, fmt["header"])
     for i, entry in enumerate(report.manual):
         alt = i % 2 == 1
@@ -220,6 +222,7 @@ def _manual_sheet(book, fmt, report: ExcelReport) -> None:
             ws.write(r, 5, "—", cell)
         else:
             ws.write(r, 5, _safe(sigma), _num_fmt(fmt, sigma, alt))
+        ws.write(r, 6, entry.get("method", ""), cell)
 
 
 def _validation_sheet(book, fmt, report: ExcelReport) -> None:

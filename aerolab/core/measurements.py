@@ -14,6 +14,8 @@ from typing import Any, Callable, Sequence
 import numpy as np
 
 from . import curves as C
+from . import materials as MT
+from . import mechanics as MX
 from . import units as U
 from .curves import AnalysisResult
 
@@ -37,6 +39,9 @@ class Channel:
     aliases: tuple[str, ...] = ()  # extra header spellings seen in instrument exports
     required: bool = True
     help: str = ""
+    # Other quantities this column may legitimately hold (an amplitude sweep's x can be a
+    # stress, a strain or a frequency). Values in one of these are used as they are.
+    alt_dimensions: tuple[str, ...] = ()
 
     def matches(self, header: str) -> float:
         """0-1 score for how well a file header names this channel."""
@@ -253,6 +258,11 @@ def prepare_data(measurement: Measurement, columns: Sequence[Sequence[float]],
             notes.append(f"{ch.label}: converted {raw} → {ch.unit}")
             continue
         other = U.dimension_of(file_unit) if file_unit else None
+        if other is not None and other in ch.alt_dimensions:
+            data[ch.key] = values
+            notes.append(f"{ch.label}: column is in {raw} ({other.replace('_', ' ')}), used as is — "
+                         "set the X-axis name and unit in Settings to match")
+            continue
         if other is not None and other != ch.dimension and ch.unit in table:
             raise ValueError(
                 f"{ch.label} needs {ch.unit}, but the mapped column is in {raw} "
@@ -316,8 +326,8 @@ def guessed_channels(measurement: Measurement, headers: Sequence[str],
 # ---------------------------------------------------------------------------
 # the registry
 # ---------------------------------------------------------------------------
-def _ch(key, label, unit, dim, *aliases, required=True, help="") -> Channel:
-    return Channel(key, label, unit, dim, tuple(aliases), required, help)
+def _ch(key, label, unit, dim, *aliases, required=True, help="", alt=()) -> Channel:
+    return Channel(key, label, unit, dim, tuple(aliases), required, help, tuple(alt))
 
 
 MEASUREMENTS: tuple[Measurement, ...] = (
@@ -467,6 +477,65 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         tags=("Gibson-Ashby", "scaling", "density"),
     ),
 
+    Measurement(
+        id="stress_relaxation",
+        name="Stress relaxation",
+        category="Mechanical",
+        summary="Maxwell, standard linear solid, two-term Prony and power-law relaxation fitted to a "
+                "strain-step test and compared by AIC. Linear viscoelastic, within the tested window only.",
+        channels=(
+            _ch("time_s", "Time", "s", "time", "t", "time (s)", "elapsed time", "step time"),
+            _ch("stress_mpa", "Stress", "MPa", "stress", "relaxation stress", "σ", "stress (MPa)"),
+        ),
+        options=(
+            Option("strain_pct", "Strain step", "float", None,
+                   "If given, the stress is divided by the step strain and the relaxation modulus E(t) is fitted.",
+                   minimum=0.0, maximum=1000.0, unit="%"),
+            Option("model", "Model", "choice", "auto", "auto fits every model and keeps the lowest AIC.",
+                   choices=("auto", "Maxwell", "Standard linear solid", "Prony (2 terms)", "Power law (Nutting)")),
+        ),
+        plots=(
+            Plot("relaxation", "Stress relaxation", "Time", "s", "Response", "MPa",
+                 (Series("data", "Measured", "scatter", "data"),
+                  Series("fit", "Best model (lowest AIC)", "line", "fit"),
+                  Series("runner-up fit", "Runner-up model", "line", "fit")),
+                 note="Fits are drawn over the measured window only."),
+        ),
+        analyser=MX.analyze_relaxation,
+        reference="Linear viscoelasticity (Ferry 1980; Findley, Lai & Onaran 1976)",
+        sample="relaxation_synthetic.csv",
+        tags=("viscoelastic", "relaxation", "Prony", "Maxwell"),
+    ),
+    Measurement(
+        id="creep",
+        name="Creep",
+        category="Mechanical",
+        summary="Kelvin–Voigt, standard linear solid, Burgers and Findley power-law creep fitted to a "
+                "constant-load test and compared by AIC. Linear viscoelastic, within the tested window only.",
+        channels=(
+            _ch("time_s", "Time", "s", "time", "t", "time (s)", "elapsed time", "creep time"),
+            _ch("strain_pct", "Strain", "%", "dimensionless", "creep strain", "ε", "strain (%)"),
+        ),
+        options=(
+            Option("stress_mpa", "Applied stress", "float", None,
+                   "If given, the strain is divided by the stress and the creep compliance J(t) is fitted.",
+                   minimum=0.0, unit="MPa"),
+            Option("model", "Model", "choice", "auto", "auto fits every model and keeps the lowest AIC.",
+                   choices=("auto", "Kelvin–Voigt", "Standard linear solid", "Burgers", "Findley power law")),
+        ),
+        plots=(
+            Plot("creep", "Creep", "Time", "s", "Response", "%",
+                 (Series("data", "Measured", "scatter", "data"),
+                  Series("fit", "Best model (lowest AIC)", "line", "fit"),
+                  Series("runner-up fit", "Runner-up model", "line", "fit")),
+                 note="Fits are drawn over the measured window only."),
+        ),
+        analyser=MX.analyze_creep,
+        reference="Linear viscoelasticity (Findley, Lai & Onaran 1976)",
+        sample="creep_synthetic.csv",
+        tags=("viscoelastic", "creep", "Burgers", "Findley"),
+    ),
+
     # ------------------------------------------------------------ thermal
     Measurement(
         id="tga",
@@ -555,6 +624,32 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         tags=("conductivity", "diffusivity", "effusivity", "R-value"),
     ),
 
+    Measurement(
+        id="k_density",
+        name="Thermal conductivity versus density",
+        category="Thermal & chemical",
+        summary="Linear, quadratic and power-law fits of conductivity against bulk density, compared by AIC; "
+                "the density of minimum conductivity is reported only when it lies inside the tested range.",
+        channels=(
+            _ch("density", "Bulk density", "g/cm^3", "density", "ρb", "rho", "apparent density"),
+            _ch("conductivity", "Thermal conductivity", "mW/(m·K)", "thermal_conductivity",
+                "k", "lambda", "conductivity"),
+        ),
+        plots=(
+            Plot("k_rho", "Conductivity versus density", "Bulk density", "g/cm³",
+                 "Thermal conductivity", "mW/(m·K)",
+                 (Series("data", "Measured", "scatter", "data"),
+                  Series("linear fit", "Linear", "line", "fit"),
+                  Series("quadratic fit", "Quadratic", "line", "fit"),
+                  Series("power-law fit", "Power law", "line", "fit")),
+                 note="Fits are drawn over the tested densities only."),
+        ),
+        analyser=MT.fit_k_vs_density,
+        reference="Omranpour et al. (2025), Fig. 6; Lu et al. (1992) for the k(ρ) trade-off",
+        sample="thermal_samples.csv",
+        tags=("conductivity", "density", "insulation", "optimum"),
+    ),
+
     # ------------------------------------------------------------ structure
     Measurement(
         id="sorption",
@@ -577,6 +672,10 @@ MEASUREMENTS: tuple[Measurement, ...] = (
             Option("pore_volume_at", "Gurvich point", "float", 0.99,
                    "Relative pressure at which total pore volume is read.",
                    minimum=0.5, maximum=0.999),
+            Option("branch", "Isotherm branch", "choice", "auto",
+                   "auto handles adsorption followed by desorption. A file whose pressure only falls "
+                   "must be declared adsorption (listed high-to-low) or desorption.",
+                   choices=("auto", "adsorption", "desorption")),
         ),
         plots=(
             Plot("isotherm", "N₂ adsorption isotherm", "Relative pressure p/p₀", "-",
@@ -623,7 +722,8 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         summary="Plateau storage modulus and the G′ = G″ crossover that marks the flow point.",
         channels=(
             _ch("x", "Oscillation stress", "Pa", "pressure",
-                "shear stress", "strain", "angular frequency", "γ", "ω"),
+                "shear stress", "strain", "angular frequency", "γ", "ω",
+                alt=("dimensionless", "frequency")),
             _ch("g_storage", "Storage modulus G′", "Pa", "modulus", "G'", "Gp", "elastic modulus"),
             _ch("g_loss", "Loss modulus G″", "Pa", "modulus", "G''", "Gpp", "viscous modulus"),
         ),

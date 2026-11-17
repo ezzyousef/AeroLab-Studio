@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.3.0: Codex review fixes
+
+- **Importer:** every record is now validated, the first included. A row with more values than the header (or than the other rows, when there is no header) refuses the file and names its line numbers. Before, such rows were cut into the analysis. Empty trailing fields are still dropped, and short rows are kept as NaN. Excel sheets follow the same rule.
+- **Compressed files:** NPZ and XLSX files are checked for their expanded size and for the number of values or cells before they are loaded.
+- **Archive import:** every candidate file name is checked for containment, links and SHA-256, and files are created exclusively.
+- **Monte Carlo:** draws outside physical bounds (a negative density, below absolute zero) or the equation's relations (for example ρb ≤ ρs) are rejected. Impossible nominal values are refused. The comparison reports "unavailable" or "disagree" when the linear σ is NaN or zero, instead of "agree".
+- **BET:** a file whose pressure only falls needs an explicit branch (adsorption or desorption), and the choice is saved with the run.
+- **Runs:** each run has a persistent unique id, used for workspace links. Older links move to it only when this is unambiguous.
+
+## 1.3.0 (upgrade 06)
+
+**Scientific correctness**
+- Every one of the 59 equations now has an independent first-principles oracle test, and 16 of them are also checked against values worked by hand. See `docs/EQUATION_REGRESSION_REPORT.md`.
+- Fixed: a BET isotherm listed from high to low pressure was cut down to one point and refused.
+- Fixed: the crossover modulus was interpolated linearly, although the crossing is found in log–log space (0.33 % high on a power-law sweep).
+- Fixed: six quantities that carry real units were declared dimensionless (tex, specific strength, bending rigidity, diffusion coefficient, Herschel–Bulkley K, the crosslink K), so the Calculator offered "%" for them and scaled them by 0.01. They now have proper dimensions. Every dimension has an SI signature, and wt%/phr were removed from the g/L table.
+- Fixed importer cases: UTF-16 and UTF-32 files, binary files, files over 256 MB, ragged rows (now reported row by row instead of being truncated silently), empty trailing columns, and an amplitude-sweep x in % or rad/s (it was refused).
+- Fatigue fit lines stop at the tested lives. A predicted life outside them is flagged as an extrapolation.
+
+**New**
+- Uncertainty: an optional correlation matrix (it must be positive semi-definite) and a Monte Carlo cross-check with a histogram that compares the linear ±1σ with the Monte Carlo 95 % interval. Kept calculations record the method used.
+- Workspace: samples (composition, spinning and process parameters, densities with derived porosity, geometry, thermal history, replicates), experiments (instrument, calibration date, operator, linked runs), attachments recorded with SHA-256, and a chain-of-custody log. Session schema v2, with migration of v1 files. Portable `.aerolabz` archives that are verified on import.
+- Mechanics studio: modulus-window sensitivity, energy per cycle, Basquin vs Wöhler compared by AIC with bootstrap intervals, bootstrap intervals for the strain–life constants, relaxation and creep models (new measurements, with demo files clearly marked SYNTHETIC), and images linked through the Workspace.
+- Materials studio: TGA decomposition steps, a DSC event table (crystallinity only from a ΔH°m you enter), k versus density (new measurement), BET vs density porosity summary, end of the LVER, and QC flags that include missing or stale calibration.
+- Explorer: batch statistics (Welch, ANOVA), density-normalised comparison, response surface, elasticities, Buckingham-π groups, DOE suggestions (results left blank), a publishable HTML/Markdown report with provenance, and read-back verification of Excel exports.
+- Notebook, figure layout templates with panels labelled (a), (b) and so on, a streaming data preview for long files, an overview of how every imported file maps, task-grouped navigation that scrolls, fractional high-DPI scaling, and the `.aerolabz` file association.
+
+**Tests**: 121 → 374. The test suite no longer touches the user's real settings file, and it deletes windows between tests (230 s → about 130 s on an idle machine).
+
 ## 1.2.1
 
 - **Analyse all and figure export no longer freeze the window:** a progress dialog shows each dataset/figure and has Cancel.

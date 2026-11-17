@@ -349,3 +349,106 @@ def save_figure(figure, path: str | Path, *, dpi: str | int = "print",
                    facecolor="none" if transparent else figure.get_facecolor(),
                    bbox_inches="tight", pad_inches=0.06)
     return p
+
+
+def render_distribution(samples, *, nominal: float, sigma: float | None, low: float, high: float,
+                        label: str, unit: str = "", theme: str = "light", figure=None):
+    """Monte Carlo histogram with the linear ±1σ band and the 95 % interval marked.
+
+    Both intervals on one axis make a disagreement between them visible at a glance,
+    which a pair of numbers does not.
+    """
+    import matplotlib
+    from matplotlib.figure import Figure
+
+    rc = S.apply_matplotlib_style(theme, "screen")
+    t = S.THEMES.get(theme, S.THEMES["light"])
+    colours = S.palette(t.palette)
+    with matplotlib.rc_context(rc):
+        if figure is None:
+            figure = Figure(figsize=(6.0, 3.2), dpi=rc["figure.dpi"])
+        figure.clear()
+        figure.patch.set_facecolor(t.background)
+        ax = figure.add_subplot(111)
+        _apply_axes_style(ax, rc, t)
+        data = np.asarray(samples, float)
+        data = data[np.isfinite(data)]
+        if data.size:
+            ax.hist(data, bins=min(80, max(10, data.size // 200)), color=colours[0], alpha=0.55,
+                    density=True, label=f"Monte Carlo ({data.size} draws)")
+        if sigma is not None and np.isfinite(sigma) and sigma > 0:
+            ax.axvspan(nominal - sigma, nominal + sigma, color=colours[1], alpha=0.16, linewidth=0,
+                       label="linear ±1σ")
+        ax.axvline(nominal, color=colours[1], linewidth=1.6, label="nominal value")
+        for x in (low, high):
+            ax.axvline(x, color=t.foreground, linewidth=1.0, linestyle="--")
+        ax.plot([], [], color=t.foreground, linestyle="--", linewidth=1.0, label="Monte Carlo 95 %")
+        ax.set_xlabel(f"{label} ({unit})" if unit and unit != "-" else label)
+        ax.set_ylabel("Probability density")
+        ax.xaxis.grid(False)
+        ax.yaxis.grid(True, color=t.grid, linewidth=rc["grid.linewidth"])
+        leg = ax.legend(loc="best", fontsize=rc["legend.fontsize"])
+        leg.set_frame_on(False)
+        for text in leg.get_texts():
+            text.set_color(t.foreground)
+        try:
+            figure.tight_layout(pad=0.8)
+        except Exception:                          # noqa: BLE001 - layout is best-effort
+            pass
+    return figure
+
+
+LAYOUTS = {"Overlay (one panel)": (1, 1), "Side by side (1 × 2)": (1, 2), "Stacked (2 × 1)": (2, 1),
+           "Grid (2 × 2)": (2, 2), "Grid (2 × 3)": (2, 3)}
+
+
+def render_panels(panels: Sequence[PlotData], layout: str, *, theme: str = "light", figure=None,
+                  legend: bool = True, panel_labels: bool = True):
+    """Several PlotData in a grid of axes: a layout template for multi-panel figures.
+
+    Panels are labelled (a), (b), … as journals expect. Extra panels beyond the grid are
+    dropped; empty grid cells are hidden.
+    """
+    import matplotlib
+    from matplotlib.figure import Figure
+
+    rows, cols = LAYOUTS.get(layout, (1, 1))
+    rc = S.apply_matplotlib_style(theme, "screen")
+    t = S.THEMES.get(theme, S.THEMES["light"])
+    with matplotlib.rc_context(rc):
+        if figure is None:
+            figure = Figure(figsize=rc["figure.figsize"], dpi=rc["figure.dpi"])
+        figure.clear()
+        figure.patch.set_facecolor(t.background)
+        axes = figure.subplots(rows, cols, squeeze=False)
+        for i, ax in enumerate(axes.ravel()):
+            if i >= len(panels):
+                ax.set_axis_off()
+                continue
+            data = panels[i]
+            _apply_axes_style(ax, rc, t)
+            for x, y, st in zip(data.x, data.y, data.styles):
+                ok = np.isfinite(x) & np.isfinite(y)
+                ax.plot(x[ok], y[ok], **st.mpl_kwargs(background=t.background))
+            ax.set_title(data.title, fontsize=rc.get("axes.titlesize", 10))
+            ax.set_xlabel(data.x_axis)
+            ax.set_ylabel(data.y_axis)
+            if data.xscale == "log":
+                ax.set_xscale("log")
+            if data.yscale == "log":
+                ax.set_yscale("log")
+            ax.xaxis.grid(False)
+            ax.yaxis.grid(True, color=t.grid, linewidth=rc["grid.linewidth"])
+            if panel_labels and len(panels) > 1:
+                ax.text(-0.02, 1.02, f"({chr(97 + i)})", transform=ax.transAxes, fontweight="bold",
+                        ha="right", va="bottom", color=t.foreground)
+            if legend and len(data) > 1:
+                leg = ax.legend(loc="best", fontsize=rc["legend.fontsize"])
+                leg.set_frame_on(False)
+                for text in leg.get_texts():
+                    text.set_color(t.foreground)
+        try:
+            figure.tight_layout(pad=0.9)
+        except Exception:                          # noqa: BLE001 - layout is best-effort
+            pass
+    return figure

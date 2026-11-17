@@ -771,3 +771,74 @@ class CommandPalette(QDialog):
         self.input.clear()
         self.input.setFocus()
         self.show()
+
+
+# ---------------------------------------------------------------------------
+from PySide6.QtCore import QAbstractTableModel, QModelIndex
+
+
+class DatasetModel(QAbstractTableModel):
+    """A read-only view of a Dataset that streams rows in chunks.
+
+    Cells are formatted only when Qt asks for them, and rows are exposed CHUNK at a time
+    through fetchMore(), so a 500 000-row file opens instantly. A QTableWidget filled up
+    front would have built every item.
+    """
+
+    CHUNK = 2000
+
+    def __init__(self, dataset=None, parent=None):
+        super().__init__(parent)
+        self._ds = None
+        self._loaded = 0
+        self.set_dataset(dataset)
+
+    def set_dataset(self, dataset) -> None:
+        self.beginResetModel()
+        self._ds = dataset
+        self._loaded = min(self.CHUNK, dataset.n_rows) if dataset is not None else 0
+        self.endResetModel()
+
+    def total_rows(self) -> int:
+        return self._ds.n_rows if self._ds is not None else 0
+
+    def rowCount(self, parent=QModelIndex()) -> int:  # noqa: N802 - Qt API
+        return 0 if parent.isValid() else self._loaded
+
+    def columnCount(self, parent=QModelIndex()) -> int:  # noqa: N802
+        return 0 if parent.isValid() or self._ds is None else self._ds.n_cols
+
+    def canFetchMore(self, parent=QModelIndex()) -> bool:  # noqa: N802
+        return not parent.isValid() and self._loaded < self.total_rows()
+
+    def fetchMore(self, parent=QModelIndex()) -> None:  # noqa: N802
+        if parent.isValid():
+            return
+        extra = min(self.CHUNK, self.total_rows() - self._loaded)
+        if extra <= 0:
+            return
+        self.beginInsertRows(QModelIndex(), self._loaded, self._loaded + extra - 1)
+        self._loaded += extra
+        self.endInsertRows()
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid() or self._ds is None:
+            return None
+        r, c = index.row(), index.column()
+        if role == Qt.TextAlignmentRole:
+            return int(Qt.AlignRight | Qt.AlignVCenter)
+        if role not in (Qt.DisplayRole, Qt.ToolTipRole):
+            return None
+        text_col = self._ds.text_columns.get(self._ds.headers[c])
+        if text_col is not None and r < len(text_col):
+            return text_col[r]
+        col = self._ds.columns[c]
+        value = col[r] if r < col.size else float("nan")
+        return "" if value != value else f"{value:.6g}"
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):  # noqa: N802
+        if role != Qt.DisplayRole or self._ds is None:
+            return None
+        if orientation == Qt.Horizontal:
+            return self._ds.label(section)
+        return str(section + 1)
